@@ -1,0 +1,57 @@
+=== Tape ===
+Notes:
+{% if tape_notes %}
+{{ tape_notes }}
+{% endif %}
+
+{% if tag_title %}
+Title: {{ tag_title }}
+{% endif %}
+Format: {{ tape_format }} {{ tape_speed }}
+TV System: {{ tv_system }}
+Colour: {{ colour }}
+HiFi: {{ "Yes" if has_hifi else "No" }}
+Linear: {{ "Yes" if has_linear else "No" }}
+Teletext: {{ "Yes" if teletext else "No" }}
+
+=== FM RF Archive ===
+Format:               {{ tape_format }} {{ tv_system }} {{ tape_speed }}
+Runtime:              {{ runtime }}
+Date of Recording:    {{ recording_date }}
+Date of Capture:      {{ capture_date_iso }}
+
+=== Capture Hardware ===
+VCR:                    {{ hw.vcr }}
+RF Capture:             {{ hw.rf_capture }}
+RF Amplifier:           {{ hw.rf_amp }}
+    Video:                  {{ hw.rf_amp_video }}
+    HiFi:                   {{ hw.rf_amp_hifi }}
+Audio ADC:              {{ hw.audio_adc }}
+
+=== RF Data ===
+Original Sample Rate:   40 MSPS 8-bit
+Video Sample Rate:      20 MSPS 8-bit (SoX sinc -n 2500 0-9600)
+{% if has_hifi_rf %}
+HiFi Sample Rate:       10 MSPS 8-bit (SoX rate -l via local-capture.sh --resample-hifi)
+{% endif %}
+
+=== Decode & Processing ===
+Software:               vhs-decode {{ vhs_decode_version }}
+{% if has_hifi %}
+HiFi Decode:            hifi-decode
+{% endif %}
+Extra parameters:       {{ extra_params }}
+Export:                 tbc-video-export → FFV1 10-bit 4:2:2 (intermediate)
+VapourSynth:            See Pipeline/ folder for .vpy
+Final Encode:           x265
+
+=== Notes ===
+- FFV1 intermediate not included (reproducible from RF)
+- TBC files not included (reproducible from RF)
+{% if has_linear %}
+- Linear audio is genuine linear from {{ hw.vcr }} audio head
+{% endif %}
+{% if teletext %}
+- Teletext extracted from VBI, see teletext/ folder
+{% endif %}
+- .preview.mp4 is only for preview on archive.org (doesn't support MKV with x265 and Opus)

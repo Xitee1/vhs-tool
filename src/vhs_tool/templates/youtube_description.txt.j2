@@ -1,0 +1,30 @@
+{{ base }}
+
+Digitalisiert mit vhs-decode.
+{% if recording_date %}
+Aufnahmedatum: {{ recording_date }}
+{% endif %}
+Digitalisierungsdatum: {{ capture_date_de }}
+Internet Archive Link (originale Qualität + RF Capture): {{ ia_url }}
+
+{% if teletext %}
+Teletext: ja (im Internet Archive enthalten)
+{% else %}
+Teletext: nein
+{% endif %}
+{% if extra_text %}
+
+{{ extra_text }}
+{% endif %}
+{% if chapters %}
+
+Kapitel:
+{% if chapters[0][0] >= 0.5 %}
+0:00 Start
+{% endif %}
+{% for start, title in chapters %}
+{{ start | yt_ts }} {{ title }}
+{% endfor %}
+{% endif %}
+
+{{ links }}

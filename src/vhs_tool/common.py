@@ -136,6 +136,21 @@ def seconds_to_ts(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
 
 
+def seconds_to_hms(seconds: float) -> str:
+    """Format seconds as 'HH:MM:SS' (rounded)."""
+    s = int(seconds + 0.5)
+    return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
+
+
+def seconds_to_yt_ts(seconds: float) -> str:
+    """YouTube chapter timestamp: M:SS below one hour, H:MM:SS above."""
+    s = int(seconds + 0.5)
+    hours, minutes, secs = s // 3600, (s % 3600) // 60, s % 60
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
 # -- Interactive prompts ---------------------------------------------------------
 
 

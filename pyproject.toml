@@ -9,9 +9,9 @@ description = "Unified CLI for the VHS decode pipeline (export, encode, ...)"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Mato", email = "m.bartusch@mobex.de" }]
-# Orchestrates external CLIs only (ffmpeg, x265, mkvmerge, tbc-video-export) —
-# no runtime Python dependencies.
-dependencies = []
+# Orchestrates external CLIs (ffmpeg, x265, mkvmerge, tbc-video-export);
+# jinja2 renders the generated text files (Notes.txt, YouTube description).
+dependencies = ["jinja2>=3.1"]
 
 [project.scripts]
 vhs-tool = "vhs_tool.cli:main"
