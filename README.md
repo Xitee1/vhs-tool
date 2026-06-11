@@ -39,6 +39,14 @@ uv tool install --editable ./tools/vhs-tool
 uv run --project ./tools/vhs-tool vhs-tool --help
 ```
 
+Editable installs pick up *code* changes immediately, but **not new
+dependencies** — if `vhs-tool` fails with `ModuleNotFoundError` after an
+update (e.g. `No module named 'jinja2'`), re-resolve them with:
+
+```bash
+uv tool upgrade vhs-tool
+```
+
 > The default paths for the tbc-* AppImages and output directories
 > (`./export`, `./final`) are relative — run `vhs-tool` from the
 > repository root, like the shell scripts.
