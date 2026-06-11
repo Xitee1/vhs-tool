@@ -4,6 +4,7 @@ import pytest
 
 from vhs_tool.cli import build_parser
 from vhs_tool.commands.decode import build_command, derive_base
+from vhs_tool.common import ToolError
 
 
 @pytest.mark.parametrize(
@@ -81,3 +82,17 @@ def test_build_command_range_and_extra():
 
     cmd = _build("--extra", "--foo bar --baz")
     assert cmd[-5:] == ["--foo", "bar", "--baz", "in.flac", "out/tape-video"]
+
+
+def test_overwrite_guard_with_dotted_base(tmp_path):
+    # Regression: with_suffix() mangled dotted base names (Tape.2024-video → Tape.tbc),
+    # so the guard checked the wrong path and existing output was silently overwritten.
+    base = tmp_path / "Tape.2024"
+    (tmp_path / "Tape.2024-video.flac").touch()
+    out_dir = tmp_path / "decoded"
+    out_dir.mkdir()
+    (out_dir / "Tape.2024-video.tbc").touch()
+
+    args = build_parser().parse_args(["decode", str(base), "--output", str(out_dir)])
+    with pytest.raises(ToolError, match=r"Output already exists: .*Tape\.2024-video\.tbc"):
+        args.func(args)

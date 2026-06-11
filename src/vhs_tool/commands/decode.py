@@ -224,7 +224,7 @@ def cmd_decode(args: argparse.Namespace) -> int:
     if not input_file.is_file():
         raise ToolError(f"Video RF input not found: {input_file}")
 
-    tbc_file = output_base.with_suffix(".tbc")
+    tbc_file = Path(f"{output_base}.tbc")
     if not args.overwrite and tbc_file.is_file():
         raise ToolError(f"Output already exists: {tbc_file} (use --overwrite to replace)")
 

@@ -62,7 +62,8 @@ def run(
     try:
         return subprocess.run(argv, check=check, capture_output=capture, text=True, env=env)
     except subprocess.CalledProcessError as exc:
-        raise ToolError(f"{argv[0]} exited with code {exc.returncode}") from exc
+        detail = f": {exc.stderr.strip()}" if capture and exc.stderr and exc.stderr.strip() else ""
+        raise ToolError(f"{argv[0]} exited with code {exc.returncode}{detail}") from exc
     except FileNotFoundError as exc:
         raise ToolError(f"Command not found: {argv[0]}") from exc
 

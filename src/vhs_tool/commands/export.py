@@ -178,7 +178,7 @@ def cmd_export(args: argparse.Namespace) -> int:
         raise ToolError(f"Linear audio not found: {linear_flac}")
 
     has_hifi = hifi_flac.is_file()
-    if "hifi" in only and not has_hifi:
+    if should_run("hifi") and not has_hifi:
         raise ToolError(f"HiFi audio not found: {hifi_flac}")
 
     Path(output).parent.mkdir(parents=True, exist_ok=True)
