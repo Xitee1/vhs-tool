@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vhs-tool"
+version = "0.1.0"
+description = "Unified CLI for the VHS decode pipeline (export, encode, ...)"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Mato", email = "m.bartusch@mobex.de" }]
+# Orchestrates external CLIs only (ffmpeg, x265, mkvmerge, tbc-video-export) —
+# no runtime Python dependencies.
+dependencies = []
+
+[project.scripts]
+vhs-tool = "vhs_tool.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "C4", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
