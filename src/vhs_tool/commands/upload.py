@@ -502,7 +502,22 @@ def _upload_youtube(info: TapeInfo, upload_dir: Path) -> int:
 
     item_dir.mkdir(parents=True, exist_ok=True)
 
-    # -- Encode ------------------------------------------------------------------
+    # -- description.txt (before the encode: cheap, and survives an aborted run) ---
+    (item_dir / "description.txt").write_text(
+        build_youtube_description(
+            base=info.base,
+            recording_date=recording_date,
+            capture_date_de=info.capture_date_de,
+            ia_url=ia_url,
+            teletext=teletext,
+            extra_text=extra_text,
+            chapters=info.chapters,
+        ),
+        encoding="utf-8",
+    )
+    print(f"description.txt written: {item_dir / 'description.txt'}")
+
+    # -- Encode (last: takes long) -------------------------------------------------
     if yt_mkv.is_file():
         print(f"YouTube encode exists, skipping: {yt_mkv}")
     elif info.input_mkv != info.mkv and info.input_mkv.is_file():
@@ -519,20 +534,6 @@ def _upload_youtube(info: TapeInfo, upload_dir: Path) -> int:
             ffmpeg_encode(info.mkv, yt_mkv, profile)
         else:
             print("Skipped. Re-run the script later to encode.")
-
-    # -- description.txt ---------------------------------------------------------
-    (item_dir / "description.txt").write_text(
-        build_youtube_description(
-            base=info.base,
-            recording_date=recording_date,
-            capture_date_de=info.capture_date_de,
-            ia_url=ia_url,
-            teletext=teletext,
-            extra_text=extra_text,
-            chapters=info.chapters,
-        ),
-        encoding="utf-8",
-    )
 
     print()
     hr()
