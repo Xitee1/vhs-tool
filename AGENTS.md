@@ -9,7 +9,18 @@ subcommand is a faithful port of one script.
 ```
 src/vhs_tool/
     cli.py          top-level argparse parser, subcommand dispatch, error handling
+                    (command modules are imported inside build_parser() so config
+                    errors hit main()'s ToolError handler)
     common.py       shared helpers: run(), check_deps(), ffprobe wrappers, timestamps, prompts
+    config.py       optional vhs-tool.toml at the pipeline root ($VHS_TOOL_CONFIG overrides
+                    the location); frozen dataclasses with built-in defaults for paths,
+                    binaries, defaults (lang/tv_system/...), hardware, links, upload
+    encoding.py     single home for all encode settings: X265_PROFILES (publish encodes),
+                    FFMPEG_PROFILES + ffmpeg_encode() (YouTube upscale, archive.org preview),
+                    profile_suffixes()/strip_profile_suffix()
+    templates/      Jinja2 templates (notes.txt.j2, youtube_description.txt.j2) + render();
+                    files in the user dir ([paths] templates, default ./templates) override
+                    the packaged ones by name
     commands/       one module per subcommand, each exposing add_parser(subparsers)
         decode.py   port of ../3_decode.sh — video RF FLAC → TBC + JSON (vhs-decode wrapper)
         audio.py    port of ../4_audio.sh — HiFi/Linear RF → decoded + aligned FLAC
@@ -17,7 +28,8 @@ src/vhs_tool/
         encode.py   port of ../7_encode.sh — FFV1 + Opus → [VapourSynth] → x265 → MKV
         upload.py   port of ../8_upload.sh — final MKV → IA/YouTube upload folder (interactive)
         rf_resample.py  port of ../rf-resample.sh — downsample RF captures (used by upload)
-tests/              pytest; covers pure logic (timestamps, cut segments, upload text files)
+tests/              pytest; covers pure logic (timestamps, cut segments, upload text files,
+                    config loading, encoding profiles/commands)
 ```
 
 Adding a command: create `commands/<name>.py` with `add_parser(subparsers)`
@@ -26,20 +38,30 @@ errors — `cli.main()` prints it as `Error: ...` and exits 1.
 
 ## Conventions
 
-- **Stdlib only at runtime** (argparse + subprocess). Do not add runtime
-  dependencies; the tool orchestrates external CLIs (ffmpeg, x265, mkvmerge,
-  tbc-video-export, vspipe).
+- **Minimal runtime dependencies**: jinja2 is the only one (template
+  rendering); everything else is stdlib (argparse + subprocess + tomllib).
+  The tool orchestrates external CLIs (ffmpeg, x265, mkvmerge,
+  tbc-video-export, vspipe). Don't add dependencies without a clear win.
 - **Port fidelity first**: when porting a bash script, preserve defaults,
   output filenames, console output, and exit behavior. The bash original
   stays in `../` until parity is verified on a real tape.
+- **No new hardcoded setup values**: user-specific values (paths, binaries,
+  hardware descriptions, static text) belong in `config.py` dataclasses
+  (overridable via `vhs-tool.toml`); encode settings belong in `encoding.py`;
+  generated-document layout belongs in `templates/*.j2`.
+- Command modules read the config at import time into module constants /
+  argparse defaults (`_CFG = get_config()`), so `--help` shows effective
+  values. Precedence: CLI flags > env vars > config file > built-in defaults.
 - Preserve the VapourSynth env contract used by `vapoursynth_vhs.vpy`:
   `VHS_INPUT`, `VHS_DEINTERLACE`, `ENCODE_PROFILE`, `VHS_KEEP_SEGMENTS`.
 - mkvmerge exit code 1 means warnings, not failure — use `mkvmerge_tolerant()`.
 - `decode` and `audio` keep the env overrides of their bash originals
   (`OUT_DIR`, `VHS_DECODE_BIN`, `AAA_BIN`, `HIFI_DECODE_BIN`, ...) — they are
-  read at module import as the argparse defaults.
+  read at module import as the argparse defaults, falling back to the config.
 - Default paths are relative (`./tools/...`, `./export`, `./final`): the tool
-  is run from the parent repo root, not from this directory.
+  is run from the parent repo root, not from this directory. The Jinja
+  templates in `templates/` must keep rendering byte-identical output for the
+  existing tests in `tests/test_upload.py`.
 
 ## Commands
 

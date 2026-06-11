@@ -16,7 +16,7 @@ Currently ported:
 
 ## Requirements
 
-- Python ≥ 3.11 (no runtime Python dependencies)
+- Python ≥ 3.11 (single runtime dependency: jinja2, installed automatically)
 - External tools, depending on the command:
   - `decode`: vhs-decode (default: `./tools/vhs-decode/.venv/bin/vhs-decode`,
     falls back to PATH)
@@ -42,6 +42,32 @@ uv run --project ./tools/vhs-tool vhs-tool --help
 > The default paths for the tbc-* AppImages and output directories
 > (`./export`, `./final`) are relative — run `vhs-tool` from the
 > repository root, like the shell scripts.
+
+## Configuration
+
+All setup-specific values (directory layout, binary paths, language,
+TV system, capture hardware description for `Notes.txt`, YouTube
+description links) live in an optional `vhs-tool.toml` at the pipeline
+root — the directory you run `vhs-tool` from. `$VHS_TOOL_CONFIG` can
+point to a different location.
+
+Every key has a built-in default, so the file only needs what differs
+on your setup. See [vhs-tool.example.toml](vhs-tool.example.toml) for
+all keys; effective values always show up in `--help`. Precedence:
+CLI flags > environment variables (`decode`/`audio`) > config file >
+built-in defaults.
+
+The generated text files (`Notes.txt`, YouTube `description.txt`) are
+rendered from Jinja2 templates shipped with the package
+(`src/vhs_tool/templates/*.j2`). To customize the layout, copy a
+template into the directory configured as `[paths] templates`
+(default `./templates`) and edit it — same-named files there override
+the packaged ones.
+
+Encode settings live in one place, `src/vhs_tool/encoding.py`: the
+x265 publish profiles (`vhs-tool encode -p ...`) and the ffmpeg
+profiles used by `vhs-tool upload` (YouTube 2880x2160 upscale,
+archive.org preview MP4).
 
 ## Usage
 
