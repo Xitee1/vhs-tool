@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import os
 import re
 import shlex
@@ -12,10 +11,9 @@ import sys
 from fractions import Fraction
 from pathlib import Path
 
+# Do not import readline here: rich prints the prompt itself and calls input("")
+# with an empty prompt, so readline's line redraws would erase the question.
 from rich.prompt import Confirm, Prompt
-
-with contextlib.suppress(ImportError):  # readline is Unix-only
-    import readline  # noqa: F401  (line editing/history for input())
 
 _TS_RE = re.compile(r"^\d{1,2}:\d{2}:\d{2}(\.\d{1,3})?$")
 
