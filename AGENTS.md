@@ -47,6 +47,13 @@ uv run vhs-tool --help           # smoke test
 Run all of these before committing. ruff is configured in pyproject.toml
 (line length 100, rules E/W/F/I/B/UP/C4/SIM).
 
+## Versioning
+
+The version is derived from git tags via hatch-vcs — there is no version
+string in the source. To release: `git tag vX.Y.Z && git push --tags`.
+Untagged commits get a `.devN+g<hash>` suffix automatically. After tagging,
+`uv sync --reinstall-package vhs-tool` refreshes the installed metadata.
+
 ## Repo
 
 - GitHub: `git@github.com:Xitee1/vhs-tool.git` (use SSH).
