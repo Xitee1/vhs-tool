@@ -10,8 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Mato", email = "m.bartusch@mobex.de" }]
 # Orchestrates external CLIs (ffmpeg, x265, mkvmerge, tbc-video-export);
-# jinja2 renders the generated text files (Notes.txt, YouTube description).
-dependencies = ["jinja2>=3.1"]
+# jinja2 renders the generated text files (Notes.txt, YouTube description);
+# rich provides the interactive prompts (upload command).
+dependencies = ["jinja2>=3.1", "rich>=13.7"]
 
 [project.scripts]
 vhs-tool = "vhs_tool.cli:main"

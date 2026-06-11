@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shlex
@@ -11,10 +12,10 @@ import sys
 from fractions import Fraction
 from pathlib import Path
 
-try:
-    import readline
-except ImportError:  # pragma: no cover (non-Unix)
-    readline = None  # type: ignore[assignment]
+from rich.prompt import Confirm, Prompt
+
+with contextlib.suppress(ImportError):  # readline is Unix-only
+    import readline  # noqa: F401  (line editing/history for input())
 
 _TS_RE = re.compile(r"^\d{1,2}:\d{2}:\d{2}(\.\d{1,3})?$")
 
@@ -154,27 +155,29 @@ def seconds_to_yt_ts(seconds: float) -> str:
 # -- Interactive prompts ---------------------------------------------------------
 
 
-def prompt_default(prompt: str, default: str = "") -> str:
-    """Prompt with an editable pre-filled default (readline) on a TTY.
+def ask(prompt: str, default: str = "", choices: list[str] | None = None) -> str:
+    """Prompt with the default shown in parentheses; plain Enter accepts it.
 
-    With non-interactive stdin: read a line, empty/EOF falls back to the default.
+    Invalid choices re-ask; EOF (non-interactive stdin) falls back to the default.
     """
-    if readline is not None and sys.stdin.isatty():
-        readline.set_startup_hook(lambda: readline.insert_text(default))
-        try:
-            return input(prompt)
-        finally:
-            readline.set_startup_hook(None)
     try:
-        answer = input(prompt)
+        return Prompt.ask(
+            prompt,
+            default=default,
+            choices=choices,
+            case_sensitive=False,
+            show_default=bool(default),
+        )
     except EOFError:
-        answer = ""
-    return answer or default
+        return default
 
 
-def confirm(prompt: str, default: str = "n") -> bool:
-    """Yes/no prompt. Accepts y/Y/j/J as yes (German-friendly)."""
-    return re.match(r"[YyJj]", prompt_default(f"{prompt} ", default)) is not None
+def confirm(prompt: str, default: bool = False) -> bool:
+    """Yes/no prompt ('[y/n] (y)'); EOF falls back to the default."""
+    try:
+        return Confirm.ask(prompt, default=default)
+    except EOFError:
+        return default
 
 
 # -- Misc ----------------------------------------------------------------------

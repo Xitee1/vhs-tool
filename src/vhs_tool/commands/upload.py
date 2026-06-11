@@ -37,11 +37,11 @@ from pathlib import Path
 
 from ..common import (
     ToolError,
+    ask,
     check_deps,
     confirm,
     format_tag,
     human_size,
-    prompt_default,
     run,
     seconds_to_hms,
     video_duration,
@@ -461,7 +461,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
     if not input_mkv.is_file():
         raise ToolError(f"Input not found: {input_mkv}")
 
-    platform = normalize_platform(args.platform or prompt_default("Platform [ia/youtube]: ", "ia"))
+    platform = normalize_platform(args.platform or ask("Platform", "ia", ["ia", "youtube"]))
 
     # Derive tape base name + locate the canonical final MKV
     base = strip_profile_suffix(input_mkv.name.removesuffix(".mkv"))
@@ -495,12 +495,10 @@ def _upload_youtube(info: TapeInfo, upload_dir: Path) -> int:
     yt_mkv = item_dir / f"{info.base}_youtube.mkv"
 
     # -- Prompts ---------------------------------------------------------------
-    ia_url = prompt_default(
-        "Internet Archive link: ", f"https://archive.org/details/{info.ia_identifier}"
-    )
-    teletext = confirm("Teletext included? [y/N]:", "n")
-    extra_text = prompt_default("Extra description text (optional): ", "")
-    recording_date = prompt_default("Aufnahmedatum/-jahr (optional): ", info.tag_date)
+    ia_url = ask("Internet Archive link", f"https://archive.org/details/{info.ia_identifier}")
+    teletext = confirm("Teletext included?")
+    extra_text = ask("Extra description text (optional)")
+    recording_date = ask("Aufnahmedatum/-jahr (optional)", info.tag_date)
 
     item_dir.mkdir(parents=True, exist_ok=True)
 
@@ -517,7 +515,7 @@ def _upload_youtube(info: TapeInfo, upload_dir: Path) -> int:
         profile = FFMPEG_PROFILES["youtube-upscale"]
         print()
         print(f"YouTube encode ({profile.describe()}): this takes a while.")
-        if confirm("Start encode now? [Y/n]:", "y"):
+        if confirm("Start encode now?", default=True):
             ffmpeg_encode(info.mkv, yt_mkv, profile)
         else:
             print("Skipped. Re-run the script later to encode.")
@@ -564,16 +562,17 @@ def _upload_ia(info: TapeInfo, upload_dir: Path, tools_dir: Path) -> int:
 
     # -- Prompts (everything up front, heavy work after one confirm) ---------------
     print("Notes.txt details (Enter accepts the default):")
-    tape_notes = prompt_default("Tape notes: ", "")
-    tape_speed = prompt_default("Tape speed [SP/LP/EP]: ", "SP")
-    colour = prompt_default("Colour [Yes/No]: ", "Yes")
-    recording_date = prompt_default("Date of Recording: ", info.tag_date or "unknown")
-    vhs_decode_version = prompt_default(
-        "vhs-decode version: ", info.vhs_decode_version or _CFG.defaults.vhs_decode_version
+    tape_notes = ask("Tape notes")
+    tape_speed = ask("Tape speed", "SP", ["SP", "LP", "EP"])
+    colour = ask("Colour", "Yes", ["Yes", "No"])
+    recording_date = ask("Date of Recording", info.tag_date or "unknown")
+    vhs_decode_version = ask(
+        "vhs-decode version", info.vhs_decode_version or _CFG.defaults.vhs_decode_version
     )
-    extra_params = prompt_default("Extra decode parameters: ", _CFG.defaults.extra_decode_params)
-    teletext_default = "y" if (item_dir / "teletext").is_dir() else "n"
-    teletext = confirm("Teletext included (teletext/ folder)? [y/n]:", teletext_default)
+    extra_params = ask("Extra decode parameters", _CFG.defaults.extra_decode_params)
+    teletext = confirm(
+        "Teletext included (teletext/ folder)?", default=(item_dir / "teletext").is_dir()
+    )
 
     has_hifi_rf = info.rf_hifi is not None
     has_linear_rf = info.rf_linear is not None
@@ -601,7 +600,7 @@ def _upload_ia(info: TapeInfo, upload_dir: Path, tools_dir: Path) -> int:
     print("  5. Write Notes.txt + _rules.conf")
     print("  6. Generate archive.sha256")
     print()
-    if not confirm("Continue? [Y/n]:", "y"):
+    if not confirm("Continue?", default=True):
         print("Aborted.")
         return 0
 
@@ -698,7 +697,7 @@ def _upload_ia(info: TapeInfo, upload_dir: Path, tools_dir: Path) -> int:
     if teletext and not (item_dir / "teletext").is_dir():
         print("  NOTE: Teletext = Yes but no teletext/ folder yet.")
         print("        Add it manually, then re-run this script to refresh checksums.")
-    if confirm("Generate checksums now (may take a while)? [Y/n]:", "y"):
+    if confirm("Generate checksums now (may take a while)?", default=True):
         count = write_checksums(item_dir)
         print(f"  archive.sha256 written ({count} files)")
     else:
