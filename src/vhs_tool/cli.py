@@ -6,11 +6,14 @@ import argparse
 import sys
 
 from . import __version__
-from .commands import audio, decode, encode, export, rf_resample, upload
 from .common import ToolError
 
 
 def build_parser() -> argparse.ArgumentParser:
+    # Imported here so config-file errors surface in main()'s ToolError handler
+    # (command modules read the config at import time for their argparse defaults).
+    from .commands import audio, decode, encode, export, rf_resample, upload
+
     parser = argparse.ArgumentParser(
         prog="vhs-tool",
         description="Unified CLI for the VHS decode pipeline.",
@@ -28,8 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
     try:
+        args = build_parser().parse_args(argv)
         return args.func(args)
     except ToolError as exc:
         print(f"Error: {exc}", file=sys.stderr)

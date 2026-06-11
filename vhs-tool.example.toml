@@ -1,0 +1,59 @@
+# vhs-tool configuration
+#
+# Place this file as `vhs-tool.toml` in the directory you run vhs-tool from
+# (the pipeline root), or point $VHS_TOOL_CONFIG at it.
+#
+# Every key is optional — the values shown are the built-in defaults.
+# Uncomment and edit only what differs on your setup.
+
+[paths]
+# Directories searched (depth 3) for RF capture files
+#captures = ["./captures", "./export_new"]
+#decoded = "./decoded"
+#export = "./export"
+#final = "./final"
+#upload = "./upload"
+#tools = "./tools"
+# Overrides for the packaged Jinja2 templates (notes.txt.j2,
+# youtube_description.txt.j2) — copy a template here to customize it
+#templates = "./templates"
+
+[binaries]
+#vhs_decode = "./tools/vhs-decode/.venv/bin/vhs-decode"
+#hifi_decode = "./tools/vhs-decode/.venv/bin/hifi-decode"
+#aaa = "./tools/vhs-decode-aaa-1.0.2-x86_64.appimage"
+#tbc_video_export = "./tools/tbc-video-export.AppImage"
+#tbc_tools = "./tools/tbc-tools.v0.2.7/tbc-tools-x86_64.AppImage"
+#tbc_export_config = "./tools/tbc-video-export.json"
+
+[defaults]
+# Audio language code for muxing
+#lang = "de"
+# pal | ntsc | pal-m | ntsc-j | mesecam
+#tv_system = "pal"
+# vhs | vhshq | svhs | umatic | ...
+#tape_format = "vhs"
+# Notes.txt "Extra parameters" prompt default
+#extra_decode_params = "--ire0_adjust"
+# Notes.txt version fallback when not detectable from decode artifacts
+#vhs_decode_version = "v0.3.9"
+
+# Capture hardware description — verbatim text for Notes.txt
+[hardware]
+#vcr = "Panasonic NV-VP30"
+#rf_capture = "CX25800 (Video) + CX23883 (HiFi), Clockgen 40 MSPS"
+#rf_amp = "ADA4857 (4S 18650 Li-Ion)"
+#rf_amp_video = "R11/R12 = 15kΩ, R13 = 120Ω, R14 = 560Ω"
+#rf_amp_hifi = "R21/R22 = 20kΩ, R23 = 390Ω, R24 = 560Ω"
+#audio_adc = "PCM1802 (Clockgen)"
+
+[links]
+# Static footer appended to the YouTube description
+#youtube = """
+#VHS-Decode Wiki: https://github.com/oyvindln/vhs-decode/wiki/
+#VHS-Decode Reddit: https://www.reddit.com/r/vhsdecode/
+#Domesday86 Discord: https://discord.gg/pVVrrxd"""
+
+[upload]
+# Pipeline scripts copied into the IA item for reproducibility
+#pipeline_files = ["vapoursynth_vhs.vpy", "6_export.sh", "7_encode.sh"]
