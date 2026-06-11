@@ -6,7 +6,7 @@ import argparse
 import sys
 
 from . import __version__
-from .commands import encode, export
+from .commands import encode, export, rf_resample, upload
 from .common import ToolError
 
 
@@ -20,6 +20,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="<command>")
     export.add_parser(subparsers)
     encode.add_parser(subparsers)
+    upload.add_parser(subparsers)
+    rf_resample.add_parser(subparsers)
     return parser
 
 

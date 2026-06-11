@@ -9,11 +9,13 @@ subcommand is a faithful port of one script.
 ```
 src/vhs_tool/
     cli.py          top-level argparse parser, subcommand dispatch, error handling
-    common.py       shared helpers: run(), check_deps(), ffprobe wrappers, timestamps
+    common.py       shared helpers: run(), check_deps(), ffprobe wrappers, timestamps, prompts
     commands/       one module per subcommand, each exposing add_parser(subparsers)
         export.py   port of ../6_export.sh — TBC + FLAC → FFV1 + Opus
         encode.py   port of ../7_encode.sh — FFV1 + Opus → [VapourSynth] → x265 → MKV
-tests/              pytest; covers pure logic (timestamps, cut segments)
+        upload.py   port of ../8_upload.sh — final MKV → IA/YouTube upload folder (interactive)
+        rf_resample.py  port of ../rf-resample.sh — downsample RF captures (used by upload)
+tests/              pytest; covers pure logic (timestamps, cut segments, upload text files)
 ```
 
 Adding a command: create `commands/<name>.py` with `add_parser(subparsers)`

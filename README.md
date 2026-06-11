@@ -9,6 +9,8 @@ Currently ported:
 | ----------------- | ------------- | ---------------------------------------------------- |
 | `vhs-tool export` | `6_export.sh` | TBC + aligned FLAC → lossless FFV1 + Opus audio      |
 | `vhs-tool encode` | `7_encode.sh` | FFV1 + Opus → [VapourSynth] → x265 → final MKV       |
+| `vhs-tool upload` | `8_upload.sh` | Final MKV → Internet Archive / YouTube upload folder |
+| `vhs-tool rf-resample` | `rf-resample.sh` | Downsample RF captures for archival (40 → 20 MSPS) |
 
 ## Requirements
 
@@ -17,6 +19,9 @@ Currently ported:
   - `export`: ffmpeg, ffprobe, tbc-video-export AppImage, tbc-tools AppImage
   - `encode`: ffmpeg, ffprobe, mkvmerge, x265, optionally vspipe/vspreview
     (VapourSynth) and mediainfo
+  - `upload`: ffmpeg, ffprobe, mkvmerge, mkvextract, optionally rsync
+    (copy progress); sox + flac when the video RF still needs resampling
+  - `rf-resample`: sox (with FLAC support), flac (≥1.4)
 
 ## Install
 
@@ -38,6 +43,8 @@ uv run --project ./tools/vhs-tool vhs-tool --help
 vhs-tool --help
 vhs-tool export --help
 vhs-tool encode --help
+vhs-tool upload --help
+vhs-tool rf-resample --help
 ```
 
 ### Export (step 1)
@@ -67,6 +74,45 @@ vhs-tool encode -p anime --vpy ./tools/vapoursynth_vhs.vpy \
     --cut-begin 00:42:00 --cut-end 00:45:30 \
     ./export/<name>
 ```
+
+### Upload (step 3)
+
+```bash
+# Internet Archive folder (RF capture data, video + preview, notes, checksums):
+vhs-tool upload ./final/<name>_anime.mkv ia
+
+# YouTube folder (2880x2160 upscale encode + description.txt):
+vhs-tool upload ./final/<name>_anime.mkv youtube
+```
+
+Interactive: metadata, chapters, runtime and capture date are extracted from
+the MKV and the folder structure; the rest (tape notes, recording date,
+teletext, ...) is prompted. Re-runs are safe — existing heavy outputs (RF
+downsample, preview, YouTube encode) are skipped, text files are regenerated.
+RF capture files are searched in `./captures` and `./export_new` by default
+(override with `--capture-dir`). If the video RF is not yet downsampled, it is
+resampled in place (same as `vhs-tool rf-resample` with defaults).
+
+### RF resample (standalone)
+
+```bash
+# PAL VHS video RF → 20 MSPS 8-bit (default preset):
+vhs-tool rf-resample ./captures/VHS_PAL_Tape_010
+
+# Other presets / custom rates:
+vhs-tool rf-resample ./captures/<name> --preset ntsc      # 16 MSPS
+vhs-tool rf-resample ./captures/<name> --preset svhs      # 24 MSPS
+vhs-tool rf-resample ./captures/<name> --vrate 18000 --vcutoff 0-8670
+
+# Also resample HiFi (normally already resampled at capture time):
+vhs-tool rf-resample ./captures/<name> --with-hifi
+
+# Preview without writing anything:
+vhs-tool rf-resample ./captures/<name> --dry-run
+```
+
+Outputs `<name>-video.8bit.20msps.flac` next to the source; originals are
+never modified. Already-converted files are skipped, so re-runs are safe.
 
 ## Development
 

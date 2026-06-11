@@ -1,4 +1,4 @@
-"""Shared helpers: process execution, ffprobe wrappers, timestamps."""
+"""Shared helpers: process execution, ffprobe wrappers, timestamps, prompts."""
 
 from __future__ import annotations
 
@@ -9,6 +9,11 @@ import subprocess
 import sys
 from fractions import Fraction
 from pathlib import Path
+
+try:
+    import readline
+except ImportError:  # pragma: no cover (non-Unix)
+    readline = None  # type: ignore[assignment]
 
 _TS_RE = re.compile(r"^\d{1,2}:\d{2}:\d{2}(\.\d{1,3})?$")
 
@@ -36,6 +41,7 @@ def run(
     argv = [str(c) for c in cmd]
     if echo:
         print(f"  $ {shlex.join(argv)}", file=sys.stderr)
+    sys.stdout.flush()  # keep our status lines ordered before subprocess output
     try:
         return subprocess.run(argv, check=check, capture_output=capture, text=True, env=env)
     except subprocess.CalledProcessError as exc:
@@ -70,6 +76,18 @@ def video_duration(file: Path | str) -> float:
     return float(value)
 
 
+def format_tag(file: Path | str, name: str) -> str:
+    """First value of a container-level (format) tag, '' if unset."""
+    value = _ffprobe(
+        file,
+        "-show_entries",
+        f"format_tags={name}",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+    )
+    return value.splitlines()[0] if value else ""
+
+
 def frame_rate(file: Path | str) -> Fraction:
     """r_frame_rate of the first video stream (e.g. 25/1)."""
     value = _ffprobe(
@@ -98,6 +116,32 @@ def seconds_to_ts(seconds: float) -> str:
     minutes = int((seconds - hours * 3600) // 60)
     secs = seconds - hours * 3600 - minutes * 60
     return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
+
+
+# -- Interactive prompts ---------------------------------------------------------
+
+
+def prompt_default(prompt: str, default: str = "") -> str:
+    """Prompt with an editable pre-filled default (readline) on a TTY.
+
+    With non-interactive stdin: read a line, empty/EOF falls back to the default.
+    """
+    if readline is not None and sys.stdin.isatty():
+        readline.set_startup_hook(lambda: readline.insert_text(default))
+        try:
+            return input(prompt)
+        finally:
+            readline.set_startup_hook(None)
+    try:
+        answer = input(prompt)
+    except EOFError:
+        answer = ""
+    return answer or default
+
+
+def confirm(prompt: str, default: str = "n") -> bool:
+    """Yes/no prompt. Accepts y/Y/j/J as yes (German-friendly)."""
+    return re.match(r"[YyJj]", prompt_default(f"{prompt} ", default)) is not None
 
 
 # -- Misc ----------------------------------------------------------------------
