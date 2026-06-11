@@ -45,7 +45,9 @@ uv run vhs-tool --help           # smoke test
 ```
 
 Run all of these before committing. ruff is configured in pyproject.toml
-(line length 100, rules E/W/F/I/B/UP/C4/SIM).
+(line length 100, rules E/W/F/I/B/UP/C4/SIM). CI
+(`.github/workflows/ci.yml`) runs the same checks on Python 3.11–3.13 for
+every push and PR.
 
 ## Versioning
 
