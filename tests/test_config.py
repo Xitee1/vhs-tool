@@ -1,7 +1,9 @@
+from pathlib import Path
+
 import pytest
 
 from vhs_tool.common import ToolError
-from vhs_tool.config import Config, load_config
+from vhs_tool.config import Config, find_config, load_config
 
 
 def test_defaults_without_file():
@@ -10,6 +12,27 @@ def test_defaults_without_file():
     assert cfg.paths.decoded == "./decoded"
     assert cfg.defaults.lang == "de"
     assert cfg.hardware.vcr == "Panasonic NV-VP30"
+
+
+def test_find_config_uses_cwd(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("VHS_TOOL_CONFIG", raising=False)
+    assert find_config() is None
+
+    (tmp_path / "vhs-tool.toml").write_text("", encoding="utf-8")
+    assert find_config() == Path("vhs-tool.toml")
+
+
+def test_find_config_env_var_wins(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    explicit = tmp_path / "elsewhere.toml"
+    explicit.write_text("", encoding="utf-8")
+    monkeypatch.setenv("VHS_TOOL_CONFIG", str(explicit))
+    assert find_config() == explicit
+
+    monkeypatch.setenv("VHS_TOOL_CONFIG", str(tmp_path / "missing.toml"))
+    with pytest.raises(ToolError, match="missing file"):
+        find_config()
 
 
 def test_partial_file_overrides_only_given_keys(tmp_path):
