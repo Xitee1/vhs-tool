@@ -19,7 +19,8 @@ Port of tools/8_upload.sh (Step 3 of the publish pipeline).
 
 Everything derivable from the folder structure / MKV metadata is pre-filled;
 interactive prompts cover the rest. Re-runs are safe: existing heavy outputs
-(RF downsample, preview, YouTube encode) are skipped, text files regenerated.
+(RF downsample, preview) are skipped, an existing YouTube encode asks before
+overwriting, text files are regenerated.
 
 The actual archive.org upload (ia CLI) is a separate script — out of scope.
 """
@@ -519,7 +520,11 @@ def _upload_youtube(info: TapeInfo, upload_dir: Path) -> int:
 
     # -- Encode (last: takes long) -------------------------------------------------
     if yt_mkv.is_file():
-        print(f"YouTube encode exists, skipping: {yt_mkv}")
+        print(f"YouTube encode exists: {yt_mkv}")
+        if confirm("Overwrite (re-encode)?"):
+            yt_mkv.unlink()
+    if yt_mkv.is_file():
+        print("Keeping existing encode.")
     elif info.input_mkv != info.mkv and info.input_mkv.is_file():
         # User passed an existing *_youtube.mkv → reuse it
         print(f"Using existing YouTube encode: {info.input_mkv}")
