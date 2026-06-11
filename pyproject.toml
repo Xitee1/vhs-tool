@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "vhs-tool"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Unified CLI for the VHS decode pipeline (export, encode, ...)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,6 +15,9 @@ dependencies = []
 
 [project.scripts]
 vhs-tool = "vhs_tool.cli:main"
+
+[tool.hatch.version]
+source = "vcs"
 
 [dependency-groups]
 dev = [
