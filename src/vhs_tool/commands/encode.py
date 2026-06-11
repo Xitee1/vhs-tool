@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from .common import (
+from ..common import (
     ToolError,
     check_deps,
     frame_rate,

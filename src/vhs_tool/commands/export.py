@@ -16,7 +16,7 @@ import argparse
 import subprocess
 from pathlib import Path
 
-from .common import ToolError, audio_channels, check_deps, human_size, run
+from ..common import ToolError, audio_channels, check_deps, human_size, run
 
 # -- Defaults ------------------------------------------------------------------
 DEFAULT_LANG = "de"

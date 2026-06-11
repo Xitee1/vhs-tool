@@ -1,7 +1,7 @@
 import pytest
 
+from vhs_tool.commands.encode import Segment, adjust_chapter_ts, build_cut_segments
 from vhs_tool.common import ToolError
-from vhs_tool.encode import Segment, adjust_chapter_ts, build_cut_segments
 
 
 def test_single_cut_pair():

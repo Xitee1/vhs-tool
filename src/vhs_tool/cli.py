@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import __version__, encode, export
+from . import __version__
+from .commands import encode, export
 from .common import ToolError
 
 
