@@ -32,50 +32,10 @@ from ..common import (
     ts_to_seconds,
     video_duration,
 )
+from ..config import get_config
+from ..encoding import X265_PROFILES
 
-DEFAULT_LANG = "de"
-
-# =============================================================================
-# Encode profiles (x265 CLI, settings from JET guide, tuned for VHS)
-# =============================================================================
-#
-# HEVC Main 10 (4:2:0 10-bit) — x265 direkt statt über ffmpeg's libx265,
-# weil der ffmpeg-Wrapper einige Parameter (no-sao, no-cutree, bframes)
-# mit Preset-Defaults überschreibt.
-#
-# VapourSynth-Script muss finalen Output als YUV420P10 liefern.
-# SAR kommt über y4m-Header von VapourSynth SetFrameProps.
-#
-# The *-youtube variants drop --sar (square pixels after Spline64 upscale
-# to 2880x2160).
-
-
-def _x265_opts(*, tskip: bool, aq_strength: str, deblock: str, sar: str | None) -> list[str]:
-    opts = [
-        "--preset", "slow", "--crf", "14", "--output-depth", "10",
-        "--no-sao", "--no-cutree", "--bframes", "16",
-    ]  # fmt: skip
-    if tskip:
-        opts.append("--tskip")
-    opts += [
-        "--aq-mode", "3", "--aq-strength", aq_strength,
-        "--psy-rd", "2.00", "--psy-rdoq", "1.50",
-        "--deblock", deblock, "--qcomp", "0.70", "--cbqpoffs", "-2",
-        "--rc-lookahead", "150", "--merange", "32",
-        "--keyint", "500", "--min-keyint", "50",
-        "--colorprim", "bt470bg", "--transfer", "bt470bg", "--colormatrix", "bt470bg",
-    ]  # fmt: skip
-    if sar:
-        opts += ["--sar", sar]
-    return opts
-
-
-PROFILES: dict[str, list[str]] = {
-    "anime": _x265_opts(tskip=True, aq_strength="0.65", deblock="-1:-1", sar="47:57"),
-    "liveaction": _x265_opts(tskip=False, aq_strength="0.80", deblock="-2:-2", sar="47:57"),
-    "anime-youtube": _x265_opts(tskip=True, aq_strength="0.65", deblock="-1:-1", sar=None),
-    "liveaction-youtube": _x265_opts(tskip=False, aq_strength="0.80", deblock="-2:-2", sar=None),
-}
+_CFG = get_config()
 
 
 # =============================================================================
@@ -261,13 +221,14 @@ def add_parser(subparsers) -> None:
     parser.add_argument(
         "-p",
         "--profile",
-        choices=sorted(PROFILES),
+        choices=sorted(X265_PROFILES),
         help="Encode profile (required for encoding)",
     )
     parser.add_argument(
         "-o",
         "--output",
-        help="Final output path without extension (default: ./final/<input-basename>_<profile>)",
+        help="Final output path without extension "
+        f"(default: {_CFG.paths.final}/<input-basename>_<profile>)",
     )
     parser.add_argument("--vpy", help="VapourSynth script (.vpy) for filtering")
     parser.add_argument(
@@ -321,7 +282,9 @@ def add_parser(subparsers) -> None:
     parser.add_argument("--date", help="Date/year")
     parser.add_argument("--comment", help="Comment")
     parser.add_argument(
-        "--lang", default=DEFAULT_LANG, help=f"Audio language code (default: {DEFAULT_LANG})"
+        "--lang",
+        default=_CFG.defaults.lang,
+        help=f"Audio language code (default: {_CFG.defaults.lang})",
     )
     # Files
     parser.add_argument(
@@ -415,9 +378,9 @@ def cmd_encode(args: argparse.Namespace) -> int:
     # Encoding mode — validate remaining requirements
     if not args.profile:
         raise ToolError("--profile is required for encoding")
-    x265_opts = PROFILES[args.profile]
+    x265_opts = X265_PROFILES[args.profile]
 
-    output = args.output or str(Path("./final") / f"{Path(input_base).name}_{args.profile}")
+    output = args.output or str(Path(_CFG.paths.final) / f"{Path(input_base).name}_{args.profile}")
 
     vpy_script: Path | None = None
     if args.vpy:

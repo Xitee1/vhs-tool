@@ -43,40 +43,18 @@ from ..common import (
     human_size,
     prompt_default,
     run,
+    seconds_to_hms,
     video_duration,
 )
+from ..config import get_config
+from ..encoding import FFMPEG_PROFILES, ffmpeg_encode, strip_profile_suffix
+from ..templates import render
 from . import rf_resample
 
-# -- Defaults ------------------------------------------------------------------
-DEFAULT_UPLOAD_DIR = "./upload"
-DEFAULT_DECODED_DIR = "./decoded"
-DEFAULT_TOOLS_DIR = "./tools"
-# Directories searched (depth 3) for RF capture files
-DEFAULT_CAPTURE_DIRS = ("./captures", "./export_new")
-
-# Encode profile suffixes from `vhs-tool encode` / YouTube encodes
-PROFILE_SUFFIXES = ("_anime-youtube", "_liveaction-youtube", "_youtube", "_anime", "_liveaction")
-
-# Pipeline scripts copied into the IA item for reproducibility
-PIPELINE_FILES = ("vapoursynth_vhs.vpy", "6_export.sh", "7_encode.sh")
+_CFG = get_config()
 
 # Files excluded from archive.sha256 (metadata, not payload)
 CHECKSUM_EXCLUDE = {"archive.sha256", "Notes.txt", "_rules.conf"}
-
-# -- Static capture hardware description (Notes.txt) --------------------------
-HW_VCR = "Panasonic NV-VP30"
-HW_RF_CAPTURE = "CX25800 (Video) + CX23883 (HiFi), Clockgen 40 MSPS"
-HW_RF_AMP = "ADA4857 (4S 18650 Li-Ion)"
-HW_RF_AMP_VIDEO = "R11/R12 = 15kΩ, R13 = 120Ω, R14 = 560Ω"
-HW_RF_AMP_HIFI = "R21/R22 = 20kΩ, R23 = 390Ω, R24 = 560Ω"
-HW_AUDIO_ADC = "PCM1802 (Clockgen)"
-
-# -- Static description links (YouTube) ----------------------------------------
-YT_LINKS = (
-    "VHS-Decode Wiki: https://github.com/oyvindln/vhs-decode/wiki/\n"
-    "VHS-Decode Reddit: https://www.reddit.com/r/vhsdecode/\n"
-    "Domesday86 Discord: https://discord.gg/pVVrrxd"
-)
 
 _CAPTURE_DATE_RE = re.compile(r"-(\d{4})-(\d{2})-(\d{2})_\d{2}_\d{2}_\d{2}")
 _ATTACHMENT_RE = re.compile(r"^Attachment ID (\d+):.*file name '([^']+)'")
@@ -91,13 +69,6 @@ def hr() -> None:
 # =============================================================================
 
 
-def strip_profile_suffix(name: str) -> str:
-    """Strip encode profile suffixes (`_anime`, `_youtube`, ...) from a base name."""
-    for suffix in PROFILE_SUFFIXES:
-        name = name.removesuffix(suffix)
-    return name
-
-
 def normalize_platform(platform: str) -> str:
     p = platform.lower()
     if p in ("ia", "archive", "archive.org"):
@@ -105,21 +76,6 @@ def normalize_platform(platform: str) -> str:
     if p in ("yt", "youtube"):
         return "youtube"
     raise ToolError(f"Unknown platform '{platform}' (expected: ia, youtube)")
-
-
-def seconds_to_hms(seconds: float) -> str:
-    """Format seconds as 'HH:MM:SS' (rounded)."""
-    s = int(seconds + 0.5)
-    return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
-
-
-def seconds_to_yt_ts(seconds: float) -> str:
-    """YouTube chapter timestamp: M:SS below one hour, H:MM:SS above."""
-    s = int(seconds + 0.5)
-    hours, minutes, secs = s // 3600, (s % 3600) // 60, s % 60
-    if hours > 0:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    return f"{minutes}:{secs:02d}"
 
 
 def parse_capture_date(base: str) -> tuple[str, str]:
@@ -155,26 +111,17 @@ def build_youtube_description(
     extra_text: str,
     chapters: list[tuple[float, str]],
 ) -> str:
-    lines = [base, "", "Digitalisiert mit vhs-decode."]
-    if recording_date:
-        lines.append(f"Aufnahmedatum: {recording_date}")
-    lines.append(f"Digitalisierungsdatum: {capture_date_de}")
-    lines.append(f"Internet Archive Link (originale Qualität + RF Capture): {ia_url}")
-    lines.append("")
-    if teletext:
-        lines.append("Teletext: ja (im Internet Archive enthalten)")
-    else:
-        lines.append("Teletext: nein")
-    if extra_text:
-        lines += ["", extra_text]
-    if chapters:
-        lines += ["", "Kapitel:"]
-        if chapters[0][0] >= 0.5:
-            lines.append("0:00 Start")
-        for start, title in chapters:
-            lines.append(f"{seconds_to_yt_ts(start)} {title}")
-    lines += ["", YT_LINKS]
-    return "\n".join(lines) + "\n"
+    return render(
+        "youtube_description.txt.j2",
+        base=base,
+        recording_date=recording_date,
+        capture_date_de=capture_date_de,
+        ia_url=ia_url,
+        teletext=teletext,
+        extra_text=extra_text,
+        chapters=chapters,
+        links=_CFG.links.youtube,
+    )
 
 
 def build_notes(
@@ -195,71 +142,25 @@ def build_notes(
     vhs_decode_version: str,
     extra_params: str,
 ) -> str:
-    def yes_no(value: bool) -> str:
-        return "Yes" if value else "No"
-
-    lines = ["=== Tape ===", "Notes:"]
-    if tape_notes:
-        lines.append(tape_notes)
-    lines.append("")
-    if tag_title:
-        lines.append(f"Title: {tag_title}")
-    lines += [
-        f"Format: {tape_format} {tape_speed}",
-        f"TV System: {tv_system}",
-        f"Colour: {colour}",
-        f"HiFi: {yes_no(has_hifi)}",
-        f"Linear: {yes_no(has_linear)}",
-        f"Teletext: {yes_no(teletext)}",
-        "",
-        "=== FM RF Archive ===",
-        f"Format:               {tape_format} {tv_system} {tape_speed}",
-        f"Runtime:              {runtime}",
-        f"Date of Recording:    {recording_date}",
-        f"Date of Capture:      {capture_date_iso}",
-        "",
-        "=== Capture Hardware ===",
-        f"VCR:                    {HW_VCR}",
-        f"RF Capture:             {HW_RF_CAPTURE}",
-        f"RF Amplifier:           {HW_RF_AMP}",
-        f"    Video:                  {HW_RF_AMP_VIDEO}",
-        f"    HiFi:                   {HW_RF_AMP_HIFI}",
-        f"Audio ADC:              {HW_AUDIO_ADC}",
-        "",
-        "=== RF Data ===",
-        "Original Sample Rate:   40 MSPS 8-bit",
-        "Video Sample Rate:      20 MSPS 8-bit (SoX sinc -n 2500 0-9600)",
-    ]
-    if has_hifi_rf:
-        lines.append(
-            "HiFi Sample Rate:       "
-            "10 MSPS 8-bit (SoX rate -l via local-capture.sh --resample-hifi)"
-        )
-    lines += [
-        "",
-        "=== Decode & Processing ===",
-        f"Software:               vhs-decode {vhs_decode_version}",
-    ]
-    if has_hifi:
-        lines.append("HiFi Decode:            hifi-decode")
-    lines += [
-        f"Extra parameters:       {extra_params}",
-        "Export:                 tbc-video-export → FFV1 10-bit 4:2:2 (intermediate)",
-        "VapourSynth:            See Pipeline/ folder for .vpy",
-        "Final Encode:           x265",
-        "",
-        "=== Notes ===",
-        "- FFV1 intermediate not included (reproducible from RF)",
-        "- TBC files not included (reproducible from RF)",
-    ]
-    if has_linear:
-        lines.append(f"- Linear audio is genuine linear from {HW_VCR} audio head")
-    if teletext:
-        lines.append("- Teletext extracted from VBI, see teletext/ folder")
-    lines.append(
-        "- .preview.mp4 is only for preview on archive.org (doesn't support MKV with x265 and Opus)"
+    return render(
+        "notes.txt.j2",
+        tape_notes=tape_notes,
+        tag_title=tag_title,
+        tape_format=tape_format,
+        tape_speed=tape_speed,
+        tv_system=tv_system,
+        colour=colour,
+        has_hifi_rf=has_hifi_rf,
+        has_hifi=has_hifi,
+        has_linear=has_linear,
+        teletext=teletext,
+        runtime=runtime,
+        recording_date=recording_date,
+        capture_date_iso=capture_date_iso,
+        vhs_decode_version=vhs_decode_version,
+        extra_params=extra_params,
+        hw=_CFG.hardware,
     )
-    return "\n".join(lines) + "\n"
 
 
 # =============================================================================
@@ -523,8 +424,8 @@ def add_parser(subparsers) -> None:
     )
     parser.add_argument(
         "--upload-dir",
-        default=DEFAULT_UPLOAD_DIR,
-        help=f"Upload folder root (default: {DEFAULT_UPLOAD_DIR})",
+        default=_CFG.paths.upload,
+        help=f"Upload folder root (default: {_CFG.paths.upload})",
     )
     parser.add_argument(
         "--capture-dir",
@@ -532,18 +433,18 @@ def add_parser(subparsers) -> None:
         action="append",
         metavar="DIR",
         help="Directory searched (depth 3) for RF capture files (repeatable; "
-        f"default: {' '.join(DEFAULT_CAPTURE_DIRS)})",
+        f"default: {' '.join(_CFG.paths.captures)})",
     )
     parser.add_argument(
         "--decoded-dir",
-        default=DEFAULT_DECODED_DIR,
+        default=_CFG.paths.decoded,
         help=f"Decode artifacts dir, for vhs-decode version detection "
-        f"(default: {DEFAULT_DECODED_DIR})",
+        f"(default: {_CFG.paths.decoded})",
     )
     parser.add_argument(
         "--tools-dir",
-        default=DEFAULT_TOOLS_DIR,
-        help=f"Tools dir with the pipeline scripts (default: {DEFAULT_TOOLS_DIR})",
+        default=_CFG.paths.tools,
+        help=f"Tools dir with rf-resample.sh + pipeline scripts (default: {_CFG.paths.tools})",
     )
     parser.set_defaults(func=cmd_upload)
 
@@ -574,7 +475,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
         input_mkv,
         mkv,
         base,
-        args.capture_dirs or list(DEFAULT_CAPTURE_DIRS),
+        args.capture_dirs or list(_CFG.paths.captures),
         Path(args.decoded_dir),
     )
     print_summary(info, platform)
@@ -613,28 +514,11 @@ def _upload_youtube(info: TapeInfo, upload_dir: Path) -> int:
         if info.input_mkv.name != yt_mkv.name:
             (item_dir / info.input_mkv.name).rename(yt_mkv)
     else:
+        profile = FFMPEG_PROFILES["youtube-upscale"]
         print()
-        print("YouTube encode (2880x2160 lanczos, x265 crf 15): this takes a while.")
+        print(f"YouTube encode ({profile.describe()}): this takes a while.")
         if confirm("Start encode now? [Y/n]:", "y"):
-            run(
-                [
-                    "ffmpeg",
-                    "-hide_banner",
-                    "-i",
-                    info.mkv,
-                    "-vf",
-                    "scale=2880:2160:flags=lanczos,setsar=1",
-                    "-c:v",
-                    "libx265",
-                    "-crf",
-                    "15",
-                    "-preset",
-                    "faster",
-                    "-c:a",
-                    "copy",
-                    yt_mkv,
-                ]  # fmt: skip
-            )
+            ffmpeg_encode(info.mkv, yt_mkv, profile)
         else:
             print("Skipped. Re-run the script later to encode.")
 
@@ -684,8 +568,10 @@ def _upload_ia(info: TapeInfo, upload_dir: Path, tools_dir: Path) -> int:
     tape_speed = prompt_default("Tape speed [SP/LP/EP]: ", "SP")
     colour = prompt_default("Colour [Yes/No]: ", "Yes")
     recording_date = prompt_default("Date of Recording: ", info.tag_date or "unknown")
-    vhs_decode_version = prompt_default("vhs-decode version: ", info.vhs_decode_version or "v0.3.9")
-    extra_params = prompt_default("Extra decode parameters: ", "--ire0_adjust")
+    vhs_decode_version = prompt_default(
+        "vhs-decode version: ", info.vhs_decode_version or _CFG.defaults.vhs_decode_version
+    )
+    extra_params = prompt_default("Extra decode parameters: ", _CFG.defaults.extra_decode_params)
     teletext_default = "y" if (item_dir / "teletext").is_dir() else "n"
     teletext = confirm("Teletext included (teletext/ folder)? [y/n]:", teletext_default)
 
@@ -757,42 +643,12 @@ def _upload_ia(info: TapeInfo, upload_dir: Path, tools_dir: Path) -> int:
         print(f"  preview exists, skipping: {preview_mp4}")
     else:
         print("  encoding preview MP4 (x264, for the archive.org player)...")
-        run(
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "warning",
-                "-i",
-                item_mkv,
-                "-c:v",
-                "libx264",
-                "-crf",
-                "23",
-                "-preset",
-                "medium",
-                "-pix_fmt",
-                "yuv420p",
-                "-movflags",
-                "+faststart",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-                "-map",
-                "0:v:0",
-                "-map",
-                "0:a",
-                "-aspect",
-                "4:3",
-                preview_mp4,
-            ]  # fmt: skip
-        )
+        ffmpeg_encode(item_mkv, preview_mp4, FFMPEG_PROFILES["archive-preview"], loglevel="warning")
 
     # -- 4. Pipeline + cover ---------------------------------------------------------
     print()
     print("Step 4: Pipeline/ + cover...")
-    for name in PIPELINE_FILES:
+    for name in _CFG.upload.pipeline_files:
         src = tools_dir / name
         if src.is_file():
             shutil.copy(src, item_dir / "Pipeline" / name)

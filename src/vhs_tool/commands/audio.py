@@ -34,15 +34,18 @@ import time
 from pathlib import Path
 
 from ..common import ToolError, resolve_binary
+from ..config import get_config
 
-# -- Defaults (override via env or CLI) ------------------------------------------
-OUT_DIR = os.environ.get("OUT_DIR", "./decoded")
+_CFG = get_config()
 
-AAA_BIN = os.environ.get("AAA_BIN", "./tools/vhs-decode-aaa-1.0.2-x86_64.appimage")
-HIFI_DECODE_BIN = os.environ.get("HIFI_DECODE_BIN", "./tools/vhs-decode/.venv/bin/hifi-decode")
+# -- Defaults (config file values, override via env or CLI) -----------------------
+OUT_DIR = os.environ.get("OUT_DIR", _CFG.paths.decoded)
+
+AAA_BIN = os.environ.get("AAA_BIN", _CFG.binaries.aaa)
+HIFI_DECODE_BIN = os.environ.get("HIFI_DECODE_BIN", _CFG.binaries.hifi_decode)
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")
 
-TV_STANDARD = os.environ.get("TV_STANDARD", "pal")  # pal | ntsc
+TV_STANDARD = os.environ.get("TV_STANDARD", _CFG.defaults.tv_system)  # pal | ntsc
 HIFI_THREADS = os.environ.get("HIFI_THREADS", "14")
 HIFI_DECODE_FREQ = os.environ.get("HIFI_DECODE_FREQ", "10")  # hifi-decode --frequency (MHz)
 HIFI_AUDIO_RATE = os.environ.get("HIFI_AUDIO_RATE", "48000")  # hifi-decode output rate

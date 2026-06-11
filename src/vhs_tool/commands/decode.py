@@ -25,13 +25,16 @@ import time
 from pathlib import Path
 
 from ..common import ToolError, resolve_binary, run
+from ..config import get_config
 
-# -- Defaults (override via env or CLI) ------------------------------------------
-OUT_DIR = os.environ.get("OUT_DIR", "./decoded")
-VHS_DECODE_BIN = os.environ.get("VHS_DECODE_BIN", "./tools/vhs-decode/.venv/bin/vhs-decode")
+_CFG = get_config()
 
-TV_SYSTEM = os.environ.get("TV_SYSTEM", "pal")  # pal | ntsc | pal-m | ntsc-j | mesecam
-TAPE_FORMAT = os.environ.get("TAPE_FORMAT", "vhs")  # vhs | vhshq | svhs | umatic | ...
+# -- Defaults (config file values, override via env or CLI) -----------------------
+OUT_DIR = os.environ.get("OUT_DIR", _CFG.paths.decoded)
+VHS_DECODE_BIN = os.environ.get("VHS_DECODE_BIN", _CFG.binaries.vhs_decode)
+
+TV_SYSTEM = os.environ.get("TV_SYSTEM", _CFG.defaults.tv_system)
+TAPE_FORMAT = os.environ.get("TAPE_FORMAT", _CFG.defaults.tape_format)
 TAPE_SPEED = os.environ.get("TAPE_SPEED", "")  # sp | lp | ep/slp (empty = default/SP)
 SAMPLE_FREQ = os.environ.get("SAMPLE_FREQ", "40")  # MHz — 40 for CX+clockgen
 THREADS = os.environ.get("THREADS", "4")

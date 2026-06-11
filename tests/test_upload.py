@@ -6,11 +6,9 @@ from vhs_tool.commands.upload import (
     ia_identifier,
     normalize_platform,
     parse_capture_date,
-    seconds_to_hms,
-    seconds_to_yt_ts,
-    strip_profile_suffix,
 )
-from vhs_tool.common import ToolError
+from vhs_tool.common import ToolError, seconds_to_hms, seconds_to_yt_ts
+from vhs_tool.encoding import strip_profile_suffix
 
 BASE = "VHS_PAL_Tape_0013_Matze-2026-06-05_17_17_14_02_00"
 

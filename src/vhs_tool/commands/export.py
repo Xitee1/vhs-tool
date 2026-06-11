@@ -17,18 +17,16 @@ import subprocess
 from pathlib import Path
 
 from ..common import ToolError, audio_channels, check_deps, human_size, run
+from ..config import get_config
+
+_CFG = get_config()
 
 # -- Defaults ------------------------------------------------------------------
-DEFAULT_LANG = "de"
 MONO_THRESHOLD_DB = -50.0
 HIFI_BITRATE_STEREO = "160k"
 HIFI_BITRATE_MONO = "80k"
 LINEAR_BITRATE_STEREO = "96k"
 LINEAR_BITRATE_MONO = "64k"
-
-DEFAULT_TBC_EXPORT = "./tools/tbc-video-export.AppImage"
-DEFAULT_TBC_TOOLS = "./tools/tbc-tools.v0.2.7/tbc-tools-x86_64.AppImage"
-DEFAULT_CONFIG_FILE = "./tools/tbc-video-export.json"
 
 PARTS = ("linear", "hifi", "video")
 
@@ -48,7 +46,7 @@ def add_parser(subparsers) -> None:
     parser.add_argument(
         "-o",
         "--output",
-        help="Output base path without extension (default: ./export/<input-basename>)",
+        help=f"Output base path without extension (default: {_CFG.paths.export}/<input-basename>)",
     )
     parser.add_argument(
         "--only",
@@ -63,22 +61,24 @@ def add_parser(subparsers) -> None:
         help="Force mono downmix (pan L+R) regardless of detection",
     )
     parser.add_argument(
-        "--lang", default=DEFAULT_LANG, help=f"Audio language code (default: {DEFAULT_LANG})"
+        "--lang",
+        default=_CFG.defaults.lang,
+        help=f"Audio language code (default: {_CFG.defaults.lang})",
     )
     parser.add_argument(
         "--tbc-export",
-        default=DEFAULT_TBC_EXPORT,
-        help=f"Path to tbc-video-export (default: {DEFAULT_TBC_EXPORT})",
+        default=_CFG.binaries.tbc_video_export,
+        help=f"Path to tbc-video-export (default: {_CFG.binaries.tbc_video_export})",
     )
     parser.add_argument(
         "--tbc-tools",
-        default=DEFAULT_TBC_TOOLS,
-        help=f"Path to tbc-tools AppImage (default: {DEFAULT_TBC_TOOLS})",
+        default=_CFG.binaries.tbc_tools,
+        help=f"Path to tbc-tools AppImage (default: {_CFG.binaries.tbc_tools})",
     )
     parser.add_argument(
         "--config-file",
-        default=DEFAULT_CONFIG_FILE,
-        help=f"Path to tbc-video-export.json (default: {DEFAULT_CONFIG_FILE})",
+        default=_CFG.binaries.tbc_export_config,
+        help=f"Path to tbc-video-export.json (default: {_CFG.binaries.tbc_export_config})",
     )
     parser.set_defaults(func=cmd_export)
 
@@ -152,7 +152,7 @@ def cmd_export(args: argparse.Namespace) -> int:
         return not only or part in only
 
     base_path = args.base_path
-    output = args.output or str(Path("./export") / Path(base_path).name)
+    output = args.output or str(Path(_CFG.paths.export) / Path(base_path).name)
 
     tbc_export = Path(args.tbc_export)
     tbc_tools = Path(args.tbc_tools)
