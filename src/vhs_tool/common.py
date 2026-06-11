@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import shutil
@@ -27,6 +28,22 @@ def check_deps(*commands: str) -> None:
     missing = [cmd for cmd in commands if shutil.which(cmd) is None]
     if missing:
         raise ToolError(f"Missing required tools: {' '.join(missing)}")
+
+
+def resolve_binary(configured: str | Path, fallback: str) -> str:
+    """Return `configured` if it is an executable file, else `fallback` from PATH.
+
+    Logs a warning when falling back; raises ToolError when neither resolves.
+    """
+    if os.access(configured, os.X_OK) and Path(configured).is_file():
+        return str(configured)
+    if shutil.which(fallback) is not None:
+        print(
+            f"WARN: configured binary not found, using {fallback} from PATH",
+            file=sys.stderr,
+        )
+        return fallback
+    raise ToolError(f"{fallback} not found: {configured} (and not on PATH)")
 
 
 def run(

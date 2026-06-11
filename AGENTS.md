@@ -11,6 +11,8 @@ src/vhs_tool/
     cli.py          top-level argparse parser, subcommand dispatch, error handling
     common.py       shared helpers: run(), check_deps(), ffprobe wrappers, timestamps, prompts
     commands/       one module per subcommand, each exposing add_parser(subparsers)
+        decode.py   port of ../3_decode.sh — video RF FLAC → TBC + JSON (vhs-decode wrapper)
+        audio.py    port of ../4_audio.sh — HiFi/Linear RF → decoded + aligned FLAC
         export.py   port of ../6_export.sh — TBC + FLAC → FFV1 + Opus
         encode.py   port of ../7_encode.sh — FFV1 + Opus → [VapourSynth] → x265 → MKV
         upload.py   port of ../8_upload.sh — final MKV → IA/YouTube upload folder (interactive)
@@ -33,6 +35,9 @@ errors — `cli.main()` prints it as `Error: ...` and exits 1.
 - Preserve the VapourSynth env contract used by `vapoursynth_vhs.vpy`:
   `VHS_INPUT`, `VHS_DEINTERLACE`, `ENCODE_PROFILE`, `VHS_KEEP_SEGMENTS`.
 - mkvmerge exit code 1 means warnings, not failure — use `mkvmerge_tolerant()`.
+- `decode` and `audio` keep the env overrides of their bash originals
+  (`OUT_DIR`, `VHS_DECODE_BIN`, `AAA_BIN`, `HIFI_DECODE_BIN`, ...) — they are
+  read at module import as the argparse defaults.
 - Default paths are relative (`./tools/...`, `./export`, `./final`): the tool
   is run from the parent repo root, not from this directory.
 

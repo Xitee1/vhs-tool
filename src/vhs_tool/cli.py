@@ -6,7 +6,7 @@ import argparse
 import sys
 
 from . import __version__
-from .commands import encode, export, rf_resample, upload
+from .commands import audio, decode, encode, export, rf_resample, upload
 from .common import ToolError
 
 
@@ -18,6 +18,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="<command>")
+    decode.add_parser(subparsers)
+    audio.add_parser(subparsers)
     export.add_parser(subparsers)
     encode.add_parser(subparsers)
     upload.add_parser(subparsers)

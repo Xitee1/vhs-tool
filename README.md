@@ -7,6 +7,8 @@ Currently ported:
 
 | Command           | Replaces      | Purpose                                              |
 | ----------------- | ------------- | ---------------------------------------------------- |
+| `vhs-tool decode` | `3_decode.sh` | Video RF FLAC → TBC + JSON (vhs-decode wrapper)      |
+| `vhs-tool audio`  | `4_audio.sh`  | HiFi/Linear RF → decoded + aligned FLAC (48 kHz)     |
 | `vhs-tool export` | `6_export.sh` | TBC + aligned FLAC → lossless FFV1 + Opus audio      |
 | `vhs-tool encode` | `7_encode.sh` | FFV1 + Opus → [VapourSynth] → x265 → final MKV       |
 | `vhs-tool upload` | `8_upload.sh` | Final MKV → Internet Archive / YouTube upload folder |
@@ -16,6 +18,10 @@ Currently ported:
 
 - Python ≥ 3.11 (no runtime Python dependencies)
 - External tools, depending on the command:
+  - `decode`: vhs-decode (default: `./tools/vhs-decode/.venv/bin/vhs-decode`,
+    falls back to PATH)
+  - `audio`: ffmpeg, hifi-decode (default: `./tools/vhs-decode/.venv/bin/hifi-decode`,
+    falls back to PATH), vhs-decode-aaa AppImage
   - `export`: ffmpeg, ffprobe, tbc-video-export AppImage, tbc-tools AppImage
   - `encode`: ffmpeg, ffprobe, mkvmerge, x265, optionally vspipe/vspreview
     (VapourSynth) and mediainfo
@@ -41,13 +47,43 @@ uv run --project ./tools/vhs-tool vhs-tool --help
 
 ```bash
 vhs-tool --help
+vhs-tool decode --help
+vhs-tool audio --help
 vhs-tool export --help
 vhs-tool encode --help
 vhs-tool upload --help
 vhs-tool rf-resample --help
 ```
 
-### Export (step 1)
+### Decode (step 1)
+
+```bash
+# PAL VHS, 40 MSPS capture (defaults) — reads ./captures/<name>-video.flac:
+vhs-tool decode ./captures/VHS_PAL_Tape_010
+# → decoded/<name>-video.{tbc,_chroma.tbc,tbc.json}
+
+# Other formats / quick test decode of 500 frames:
+vhs-tool decode ./captures/<name> --format svhs --chroma-trap
+vhs-tool decode ./captures/<name> --start 100 --length 500
+
+# Any unported vhs-decode flag can be passed through:
+vhs-tool decode ./captures/<name> --extra "--cxadc --level_adjust 0.1"
+```
+
+### Audio (step 2)
+
+```bash
+# HiFi + Linear, aligned against the TBC JSON from step 1:
+vhs-tool audio ./captures/VHS_PAL_Tape_010
+# → decoded/<name>-{hifi,linear}.aligned.flac (48 kHz)
+```
+
+Missing HiFi or Linear inputs are auto-skipped with a warning. Decoded HiFi is
+validated against the hifi-decode peak gain (noise-only tapes are detected and
+skipped); the decoded intermediate is deleted after alignment unless
+`--keep-intermediate` is given.
+
+### Export (step 3)
 
 ```bash
 vhs-tool export ./decoded/VHS_PAL_Tape__Name-2026-05-03_18_14_58_02_00
@@ -57,7 +93,7 @@ vhs-tool export ./decoded/VHS_PAL_Tape__Name-2026-05-03_18_14_58_02_00
 vhs-tool export --only video ./decoded/<name>
 ```
 
-### Encode (step 2)
+### Encode (step 4)
 
 ```bash
 # Interactive VapourSynth tuning first:
@@ -75,7 +111,7 @@ vhs-tool encode -p anime --vpy ./tools/vapoursynth_vhs.vpy \
     ./export/<name>
 ```
 
-### Upload (step 3)
+### Upload (step 5)
 
 ```bash
 # Internet Archive folder (RF capture data, video + preview, notes, checksums):
