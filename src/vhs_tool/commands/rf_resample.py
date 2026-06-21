@@ -24,10 +24,9 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
-import time
 from pathlib import Path
 
-from ..common import ToolError, check_deps, run
+from ..common import ToolError, check_deps, derive_base, log, soxi
 
 # -- Defaults ------------------------------------------------------------------
 VIDEO_RATE = 20000  # target video rate in FLAC-scale (20000 = 20 MSPS)
@@ -46,26 +45,10 @@ PRESETS: dict[str, tuple[int, str]] = {
     "svhs": (24000, "0-9400"),  # SVHS/Umatic/SuperBeta
 }
 
-_EXTENSIONS = (".flac", ".wav", ".raw", ".ldf", ".lds", ".r8", ".u8", ".r16", ".u16")
-_CHANNELS = ("-video", "-hifi", "-linear", "-headswitch")
-
-
-def log(message: str = "") -> None:
-    print(f"[{time.strftime('%H:%M:%S')}] {message}", file=sys.stderr)
-
 
 # =============================================================================
 # Pure helpers (testable)
 # =============================================================================
-
-
-def derive_base(name: str) -> str:
-    """Strip extension and channel suffixes so any capture file can serve as <base>."""
-    for ext in _EXTENSIONS:
-        name = name.removesuffix(ext)
-    for channel in _CHANNELS:
-        name = name.removesuffix(channel)
-    return name
 
 
 def default_suffix(bps: int, target_rate: int) -> str:
@@ -76,10 +59,6 @@ def default_suffix(bps: int, target_rate: int) -> str:
 # =============================================================================
 # Resampling
 # =============================================================================
-
-
-def _soxi(file: Path, flag: str) -> int:
-    return int(run(["soxi", flag, file], capture=True).stdout.strip())
 
 
 def _pipeline(
@@ -141,9 +120,9 @@ def resample_file(
         log(f"  {channel}: not found, skipping")
         return None
 
-    src_rate = _soxi(file, "-r")
-    bps = _soxi(file, "-b")
-    samples = _soxi(file, "-s")
+    src_rate = soxi(file, "-r")
+    bps = soxi(file, "-b")
+    samples = soxi(file, "-s")
 
     log(f"  {file.name}")
     if src_rate == target_rate:

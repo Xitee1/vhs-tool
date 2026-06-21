@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime
 from fractions import Fraction
 from pathlib import Path
@@ -238,6 +239,37 @@ def confirm(prompt: str, default: bool = False) -> bool:
         return Confirm.ask(prompt, default=default)
     except EOFError:
         return default
+
+
+# -- RF captures ---------------------------------------------------------------
+
+# Extensions and channel suffixes used by vhs-decode RF capture files. A capture
+# set for one tape shares a <base> name with a per-channel suffix and a format
+# extension, e.g. "VHS_PAL_Tape_010-video.flac".
+RF_EXTENSIONS = (".flac", ".wav", ".raw", ".ldf", ".lds", ".r8", ".u8", ".r16", ".u16")
+RF_CHANNELS = ("-video", "-hifi", "-linear", "-headswitch")
+
+
+def derive_base(name: str) -> str:
+    """Strip a capture file's format extension and channel suffix to recover <base>.
+
+    Any channel/format of a capture set can therefore be passed as the base path.
+    """
+    for ext in RF_EXTENSIONS:
+        name = name.removesuffix(ext)
+    for channel in RF_CHANNELS:
+        name = name.removesuffix(channel)
+    return name
+
+
+def soxi(file: Path | str, flag: str) -> int:
+    """Return an integer soxi field (e.g. -r rate, -s sample count, -b bit depth)."""
+    return int(run(["soxi", flag, file], capture=True).stdout.strip())
+
+
+def log(message: str = "") -> None:
+    """Print a timestamped progress line to stderr."""
+    print(f"[{time.strftime('%H:%M:%S')}] {message}", file=sys.stderr)
 
 
 # -- Misc ----------------------------------------------------------------------
