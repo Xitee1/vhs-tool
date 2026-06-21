@@ -1,6 +1,11 @@
 import pytest
 
-from vhs_tool.commands.encode import Segment, adjust_chapter_ts, build_cut_segments
+from vhs_tool.commands.encode import (
+    Segment,
+    adjust_chapter_ts,
+    build_cut_segments,
+    parse_chapters,
+)
 from vhs_tool.common import ToolError
 
 
@@ -54,3 +59,23 @@ def test_chapter_inside_cut_rejected():
     _, remove = build_cut_segments([("begin", "00:10:00"), ("end", "00:20:00")], duration=3600.0)
     with pytest.raises(ToolError, match="falls inside removed segment"):
         adjust_chapter_ts("00:15:00", remove)
+
+
+def test_parse_chapters_normalizes_bare_timestamp():
+    # The original bug: "00:02:14" without .mmm was rejected by mkvmerge.
+    parsed = parse_chapters(["00:02:14 Main", "00:24:55.000 Outro"])
+    assert parsed == [("00:02:14.000", "Main"), ("00:24:55.000", "Outro")]
+
+
+def test_parse_chapters_keeps_multiword_title():
+    assert parse_chapters(["00:00:02.000 Start of show"]) == [("00:00:02.000", "Start of show")]
+
+
+def test_parse_chapters_missing_title_rejected():
+    with pytest.raises(ToolError):
+        parse_chapters(["00:02:14"])
+
+
+def test_parse_chapters_invalid_timestamp_rejected():
+    with pytest.raises(ToolError):
+        parse_chapters(["2:14 Main"])
