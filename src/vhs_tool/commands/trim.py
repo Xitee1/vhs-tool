@@ -169,6 +169,10 @@ def get_samples(file: Path) -> int:
     STREAMINFO block, making `soxi -s` return 0. Fall back through ffprobe
     (duration × rate) and finally `sox … stat` (a full scan, slow but always
     correct) before giving up.
+
+    Note: ffprobe only helps when the FLAC carries a duration in its metadata —
+    for headerless captures (total_samples=0) it returns nothing, so the full
+    scan is unavoidable. Re-encoding the FLAC with a correct header fixes it.
     """
     try:
         samples = soxi(file, "-s")
@@ -188,6 +192,11 @@ def get_samples(file: Path) -> int:
         except (ToolError, ValueError):
             pass
 
+    log(
+        f"  {file.name}: sample count is missing from the FLAC header — counting "
+        "it by reading the whole file (slow: minutes for a large RF capture). "
+        "Re-encoding the FLAC with a correct header avoids this."
+    )
     result = run(["sox", file, "-n", "stat"], capture=True, check=False)
     for line in result.stderr.splitlines():
         if line.startswith("Samples read"):
@@ -222,6 +231,7 @@ def trim_file(
     file: Path,
     keep_fraction: float,
     *,
+    known_samples: int | None = None,
     delete_original: bool = False,
     flac_level: int = FLAC_LEVEL,
     dry_run: bool = False,
@@ -230,11 +240,12 @@ def trim_file(
     """Trim one capture file in-place to keep_fraction of its content.
 
     Returns True on success, False if the file was skipped (unsupported extension
-    or a stale temp/backup file already present).
+    or a stale temp/backup file already present). Pass known_samples to reuse an
+    already-computed FLAC sample count and skip a second (potentially slow) scan.
     """
     ext = file.suffix.lower()
     if ext == ".flac":
-        total = get_samples(file)
+        total = known_samples if known_samples is not None else get_samples(file)
         rate = soxi(file, "-r")
         unit = "samples"
     elif ext == ".u8":
@@ -429,6 +440,9 @@ def cmd_trim(args: argparse.Namespace) -> int:
         ok = trim_file(
             file,
             result["keep_fraction"],
+            # The reference (video) sample count is already known — reuse it so a
+            # headerless FLAC is not scanned a second time.
+            known_samples=ref_samples if file == ref_file else None,
             delete_original=args.delete_original,
             dry_run=args.dry_run,
             verbose=args.verbose,
