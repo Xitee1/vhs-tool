@@ -21,7 +21,6 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from xml.sax.saxutils import escape
 
 from ..common import (
     ToolError,
@@ -29,11 +28,13 @@ from ..common import (
     frame_rate,
     run,
     seconds_to_ts,
+    to_matroska_date,
     ts_to_seconds,
     video_duration,
 )
 from ..config import get_config
 from ..encoding import X265_PROFILES
+from ..metadata import TAG_FIELDS, add_metadata_args, build_global_tags_xml
 
 _CFG = get_config()
 
@@ -275,17 +276,8 @@ def add_parser(subparsers) -> None:
         "Requires --vpy. Chapters are shifted automatically; chapters inside "
         "cut regions error.",
     )
-    # Metadata
-    parser.add_argument("--title", help="Title metadata")
-    parser.add_argument("--source", help='Source device (e.g. "Panasonic NV-VP30")')
-    parser.add_argument("--publisher", help="Publisher name")
-    parser.add_argument("--date", help="Date/year")
-    parser.add_argument("--comment", help="Comment")
-    parser.add_argument(
-        "--lang",
-        default=_CFG.defaults.lang,
-        help=f"Audio language code (default: {_CFG.defaults.lang})",
-    )
+    # Metadata (title/source/publisher/date/date-tz/comment/lang) — shared with `set-props`
+    add_metadata_args(parser, lang_default=_CFG.defaults.lang)
     # Files
     parser.add_argument(
         "--cover",
@@ -532,6 +524,13 @@ def _encode(
     if args.title:
         mkvmerge_cmd += ["--title", args.title]
 
+    # Segment "date" — mkvmerge defaults this to the muxing time. Media servers
+    # (Immich) use it as the timeline date, so set it to the recording date.
+    if args.date:
+        seg_date = to_matroska_date(args.date, args.date_tz)
+        mkvmerge_cmd += ["--date", seg_date]
+        print(f"  Segment date: {seg_date}")
+
     # Video track (raw HEVC bitstream — mkvmerge handles this directly)
     mkvmerge_cmd.append(video_hevc)
 
@@ -550,25 +549,11 @@ def _encode(
         linear_audio,
     ]  # fmt: skip
 
-    # Metadata tags (Source, Publisher, Date, Comment)
-    tags = [
-        ("SOURCE", args.source),
-        ("PUBLISHER", args.publisher),
-        ("DATE_RELEASED", args.date),
-        ("COMMENT", args.comment),
-    ]
-    tags = [(name, value) for name, value in tags if value]
+    # Metadata tags (Source, Publisher, Date, Comment) — same mapping as `set-props`
+    tags = [(tag, getattr(args, dest)) for dest, tag in TAG_FIELDS if getattr(args, dest)]
     if tags:
         tags_file = work_dir / "tags.xml"
-        simple = "".join(
-            f"<Simple><Name>{name}</Name><String>{escape(value)}</String></Simple>"
-            for name, value in tags
-        )
-        tags_file.write_text(
-            '<?xml version="1.0" encoding="UTF-8"?>\n'
-            f"<Tags><Tag><Targets></Targets>{simple}</Tag></Tags>\n",
-            encoding="utf-8",
-        )
+        tags_file.write_text(build_global_tags_xml(tags), encoding="utf-8")
         mkvmerge_cmd += ["--global-tags", tags_file]
 
     # Chapters

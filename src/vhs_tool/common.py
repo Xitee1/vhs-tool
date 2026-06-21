@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from fractions import Fraction
 from pathlib import Path
 
@@ -16,6 +17,12 @@ from pathlib import Path
 from rich.prompt import Confirm, Prompt
 
 _TS_RE = re.compile(r"^\d{1,2}:\d{2}:\d{2}(\.\d{1,3})?$")
+_MK_DATE_RE = re.compile(
+    r"^(\d{4})(?:-(\d{1,2}))?(?:-(\d{1,2}))?"
+    r"(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?)?"
+    r"\s*(Z|[+-]\d{2}:?\d{2})?$"
+)
+_TZ_RE = re.compile(r"^([+-])(\d{2}):?(\d{2})$")
 
 
 class ToolError(Exception):
@@ -85,6 +92,14 @@ def audio_channels(file: Path | str) -> int:
     return int(value)
 
 
+def audio_track_count(file: Path | str) -> int:
+    """Number of audio streams in the file."""
+    value = _ffprobe(
+        file, "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0"
+    )
+    return len(value.splitlines()) if value else 0
+
+
 def video_duration(file: Path | str) -> float:
     """Container duration in seconds."""
     value = _ffprobe(file, "-show_entries", "format=duration", "-of", "csv=p=0")
@@ -148,6 +163,53 @@ def seconds_to_yt_ts(seconds: float) -> str:
     if hours > 0:
         return f"{hours}:{minutes:02d}:{secs:02d}"
     return f"{minutes}:{secs:02d}"
+
+
+# -- Dates ---------------------------------------------------------------------
+
+
+def normalize_tz(tz: str) -> str:
+    """Normalize a timezone offset to '+HH:MM' / '-HH:MM' (or 'Z' for UTC)."""
+    tz = tz.strip()
+    if tz in ("Z", "z"):
+        return "Z"
+    match = _TZ_RE.match(tz)
+    if not match:
+        raise ToolError(f"Invalid timezone offset '{tz}' (expected +HH:MM, -HH:MM, or Z)")
+    sign, hours, minutes = match.groups()
+    return f"{sign}{hours}:{minutes}"
+
+
+def to_matroska_date(value: str, tz: str = "+00:00") -> str:
+    """Normalize a flexible date/year into Matroska's ISO 8601 Segment date.
+
+    Accepts a year ('1998'), date ('1998-05-08') or datetime
+    ('1998-05-08T18:11:32', space separator and a trailing offset/'Z' allowed).
+    Missing fields default to Jan 1st, 00:00:00. A value that already carries a
+    timezone keeps it; otherwise `tz` (e.g. '+01:00') is appended. The result
+    is what mkvpropedit's `--set date=` expects.
+    """
+    match = _MK_DATE_RE.match(value.strip())
+    if not match:
+        raise ToolError(
+            f"Cannot parse date '{value}' (expected a year, date or datetime, "
+            "e.g. 1998, 1998-05-08, or 1998-05-08T18:11:32)"
+        )
+    year, month, day, hour, minute, second, offset = match.groups()
+    parts = (
+        int(year),
+        int(month or 1),
+        int(day or 1),
+        int(hour or 0),
+        int(minute or 0),
+        int(second or 0),
+    )
+    try:
+        datetime(*parts)  # validate field ranges (e.g. month 13, day 32)
+    except ValueError as exc:
+        raise ToolError(f"Invalid date '{value}': {exc}") from exc
+    out_tz = normalize_tz(offset or tz)
+    return "{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}{}".format(*parts, out_tz)
 
 
 # -- Interactive prompts ---------------------------------------------------------

@@ -18,6 +18,9 @@ src/vhs_tool/
     encoding.py     single home for all encode settings: X265_PROFILES (publish encodes),
                     FFMPEG_PROFILES + ffmpeg_encode() (YouTube upscale, archive.org preview),
                     profile_suffixes()/strip_profile_suffix()
+    metadata.py     MKV metadata shared by encode + set-props: add_metadata_args()
+                    (title/source/publisher/date/comment/lang flags), TAG_FIELDS
+                    (arg→Matroska tag), build_global_tags_xml()/parse_global_tags()
     templates/      Jinja2 templates (notes.txt.j2, youtube_description.txt.j2) + render();
                     files in the user dir ([paths] templates, default ./templates) override
                     the packaged ones by name
@@ -28,6 +31,7 @@ src/vhs_tool/
         encode.py   port of ../7_encode.sh — FFV1 + Opus → [VapourSynth] → x265 → MKV
         upload.py   port of ../8_upload.sh — final MKV → IA/YouTube upload folder (interactive)
         rf_resample.py  port of ../rf-resample.sh — downsample RF captures (used by upload)
+        set_props.py    patch metadata on an existing MKV in place (mkvpropedit; PATCH)
 tests/              pytest; covers pure logic (timestamps, cut segments, upload text files,
                     config loading, encoding profiles/commands)
 ```
