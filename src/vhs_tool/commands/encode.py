@@ -124,6 +124,26 @@ def adjust_chapter_ts(ts: str, remove: list[Segment]) -> str:
     return seconds_to_ts(seconds - removed)
 
 
+def parse_chapters(chapters: list[str]) -> list[tuple[str, str]]:
+    """Parse, validate and normalize "HH:MM:SS[.mmm] Title" markers.
+
+    Returns a list of (timestamp, title) with each timestamp normalized to
+    mkvmerge's required HH:MM:SS.mmm form — the OGM simple chapter parser
+    rejects a bare HH:MM:SS (e.g. ``CHAPTER03=00:02:14``). Run early as a
+    pre-check so a chapter typo fails before the expensive encode, not after.
+    """
+    parsed: list[tuple[str, str]] = []
+    for entry in chapters:
+        timestamp, _, title = entry.partition(" ")
+        title = title.strip()
+        if not title:
+            raise ToolError(f'Chapter "{entry}" has no title (expected "HH:MM:SS[.mmm] Title")')
+        # ts_to_seconds validates the format; seconds_to_ts re-adds the .mmm
+        normalized = seconds_to_ts(ts_to_seconds(timestamp))
+        parsed.append((normalized, title))
+    return parsed
+
+
 def mkvmerge_tolerant(mkvmerge_args: list) -> None:
     """Run mkvmerge, tolerating exit code 1.
 
@@ -320,6 +340,9 @@ def cmd_encode(args: argparse.Namespace) -> int:
     chapters: list[str] = args.chapters or []
     covers: list[str] = args.covers or []
 
+    # Pre-check: validate + normalize chapters now, before the expensive encode.
+    parsed_chapters = parse_chapters(chapters)
+
     # Discover input files
     input_base = args.input_base
     ffv1_file = Path(f"{input_base}.ffv1.mkv")
@@ -414,7 +437,7 @@ def cmd_encode(args: argparse.Namespace) -> int:
 
     work_dir = Path(tempfile.mkdtemp(prefix=".vhs-encode-", dir=output_dir))
     try:
-        return _encode(
+        result = _encode(
             args,
             ffv1_file=ffv1_file,
             linear_opus=linear_opus,
@@ -426,12 +449,34 @@ def cmd_encode(args: argparse.Namespace) -> int:
             deinterlace=deinterlace,
             keep_segments=keep_segments,
             remove_segments=remove_segments,
-            chapters=chapters,
+            chapters=parsed_chapters,
             covers=covers,
             work_dir=work_dir,
         )
-    finally:
+    except BaseException:
+        # Preserve the encoded video stream if the failure happened after the
+        # (expensive) Step 1 encode — e.g. a mux error — so it can be recovered
+        # instead of forcing a full re-encode. Only clean up when nothing of
+        # value was produced (pre-encode failures).
+        video_hevc = work_dir / "video.265"
+        if video_hevc.is_file():
+            print()
+            print("=" * 60)
+            print("Encode FAILED after the video stream was already encoded.")
+            print("The encoded video has been PRESERVED for recovery at:")
+            print(f"  {video_hevc}")
+            print(
+                "Fix the error and re-mux without re-encoding (mkvmerge -o "
+                f"{output}.mkv {video_hevc} ...)."
+            )
+            print(f"Delete {work_dir} manually once recovered.")
+            print("=" * 60)
+        else:
+            shutil.rmtree(work_dir, ignore_errors=True)
+        raise
+    else:
         shutil.rmtree(work_dir, ignore_errors=True)
+        return result
 
 
 def _encode(
@@ -447,7 +492,7 @@ def _encode(
     deinterlace: bool,
     keep_segments: list[Segment],
     remove_segments: list[Segment],
-    chapters: list[str],
+    chapters: list[tuple[str, str]],
     covers: list[str],
     work_dir: Path,
 ) -> int:
@@ -576,8 +621,7 @@ def _encode(
     if chapters:
         generated_chapters = work_dir / "chapters.txt"
         lines = []
-        for i, entry in enumerate(chapters, start=1):
-            timestamp, _, title = entry.partition(" ")
+        for i, (timestamp, title) in enumerate(chapters, start=1):
             if keep_segments:
                 shifted = adjust_chapter_ts(timestamp, remove_segments)
                 print(f"  Chapter {i} shifted: {timestamp} → {shifted}")
