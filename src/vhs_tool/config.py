@@ -53,6 +53,7 @@ class Binaries:
 @dataclass(frozen=True)
 class Defaults:
     lang: str = "de"  # audio language code for muxing
+    timezone: str = "+00:00"  # offset for Matroska Segment dates lacking one (UTC)
     tv_system: str = "pal"  # pal | ntsc | pal-m | ntsc-j | mesecam
     tape_format: str = "vhs"  # vhs | vhshq | svhs | umatic | ...
     extra_decode_params: str = "--ire0_adjust"  # Notes.txt "Extra parameters" default

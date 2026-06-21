@@ -12,7 +12,7 @@ from .common import ToolError
 def build_parser() -> argparse.ArgumentParser:
     # Imported here so config-file errors surface in main()'s ToolError handler
     # (command modules read the config at import time for their argparse defaults).
-    from .commands import audio, decode, encode, export, rf_resample, upload
+    from .commands import audio, decode, encode, export, rf_resample, set_props, upload
 
     parser = argparse.ArgumentParser(
         prog="vhs-tool",
@@ -27,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     encode.add_parser(subparsers)
     upload.add_parser(subparsers)
     rf_resample.add_parser(subparsers)
+    set_props.add_parser(subparsers)
     return parser
 
 
