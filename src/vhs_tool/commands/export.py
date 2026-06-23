@@ -61,6 +61,11 @@ def add_parser(subparsers) -> None:
         help="Force mono downmix (pan L+R) regardless of detection",
     )
     parser.add_argument(
+        "--process-vbi",
+        action="store_true",
+        help="Process VBI data during FFV1 export (off by default)",
+    )
+    parser.add_argument(
         "--lang",
         default=_CFG.defaults.lang,
         help=f"Audio language code (default: {_CFG.defaults.lang})",
@@ -238,21 +243,23 @@ def cmd_export(args: argparse.Namespace) -> int:
     ffv1_file = Path(f"{output}.ffv1.mkv")
     if should_run("video"):
         print("\nExporting FFV1...")
-        run(
-            [
-                tbc_export,
-                "--tbc-tools-appimage",
-                tbc_tools,
-                "--config-file",
-                config_file,
-                "--process-vbi",
-                "--export-metadata",
-                "--profile",
-                "ffv1",
-                tbc_file,
-                output,
-            ]
-        )
+        export_cmd = [
+            tbc_export,
+            "--tbc-tools-appimage",
+            tbc_tools,
+            "--config-file",
+            config_file,
+        ]
+        if args.process_vbi:
+            export_cmd.append("--process-vbi")
+        export_cmd += [
+            "--export-metadata",
+            "--profile",
+            "ffv1",
+            tbc_file,
+            output,
+        ]
+        run(export_cmd)
 
         # tbc-video-export creates {base}.mkv — rename to {base}.ffv1.mkv
         tbc_output = Path(f"{output}.mkv")
