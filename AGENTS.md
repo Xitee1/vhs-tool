@@ -32,6 +32,7 @@ src/vhs_tool/
         upload.py   port of ../8_upload.sh — final MKV → IA/YouTube upload folder (interactive)
         rf_resample.py  port of ../rf-resample.sh — downsample RF captures (used by upload)
         set_props.py    patch metadata on an existing MKV in place (mkvpropedit; PATCH)
+        trim.py         port of ../rf-trim.sh — trim noise from the end of synced RF captures
 tests/              pytest; covers pure logic (timestamps, cut segments, upload text files,
                     config loading, encoding profiles/commands)
 ```

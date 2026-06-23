@@ -13,6 +13,7 @@ Currently ported:
 | `vhs-tool encode` | `7_encode.sh` | FFV1 + Opus → [VapourSynth] → x265 → final MKV       |
 | `vhs-tool upload` | `8_upload.sh` | Final MKV → Internet Archive / YouTube upload folder |
 | `vhs-tool rf-resample` | `rf-resample.sh` | Downsample RF captures for archival (40 → 20 MSPS) |
+| `vhs-tool rf-trim` | `rf-trim.sh` | Trim noise from the end of synchronized RF captures    |
 
 ## Requirements
 
@@ -28,6 +29,7 @@ Currently ported:
   - `upload`: ffmpeg, ffprobe, mkvmerge, mkvextract, optionally rsync
     (copy progress); sox + flac when the video RF still needs resampling
   - `rf-resample`: sox (with FLAC support), flac (≥1.4)
+  - `rf-trim`: sox (with FLAC support); ffprobe optional (sample-count fallback)
 
 ## Install
 
@@ -183,6 +185,28 @@ vhs-tool rf-resample ./captures/<name> --dry-run
 
 Outputs `<name>-video.8bit.20msps.flac` next to the source; originals are
 never modified. Already-converted files are skipped, so re-runs are safe.
+
+### RF trim
+
+```bash
+# Keep the first 1h23m45s of decoded video. The lock-in offset (+4s of RF) is
+# added automatically so the decoded video ends at the requested timestamp:
+vhs-tool rf-trim ./captures/VHS_PAL_Tape_010 --end 01:23:45
+
+# Remove the last 120 seconds (raw RF time, no offset):
+vhs-tool rf-trim ./captures/VHS_PAL_Tape_010 --trim 120
+
+# --end accepts HH:MM:SS, MM:SS or plain seconds; other options:
+vhs-tool rf-trim ./captures/<name> --end 2700         # keep up to 2700s
+vhs-tool rf-trim ./captures/<name> --trim 120 --delete-original
+vhs-tool rf-trim ./captures/<name> --end 45:30 --dry-run -v
+```
+
+Auto-discovers all channels (`-video` required as the sync reference, plus
+`-hifi`, `-linear`, `-headswitch`) and trims them proportionally by sample
+count so they stay in sync. The trimmed result takes the original file name and
+the **untouched original is kept** alongside it as `<file>.bak` (pass
+`--delete-original` to remove it instead).
 
 ## Development
 
