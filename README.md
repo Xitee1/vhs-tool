@@ -1,19 +1,17 @@
 # vhs-tool
 
-Unified CLI for the VHS decode pipeline. Replaces the numbered shell scripts
-(`tools/*.sh`) step by step with a single Python tool.
+Unified CLI for the VHS decode pipeline — a single Python tool covering every
+step from RF capture to a publish-ready upload folder.
 
-Currently ported:
-
-| Command           | Replaces      | Purpose                                              |
-| ----------------- | ------------- | ---------------------------------------------------- |
-| `vhs-tool decode` | `3_decode.sh` | Video RF FLAC → TBC + JSON (vhs-decode wrapper)      |
-| `vhs-tool audio`  | `4_audio.sh`  | HiFi/Linear RF → decoded + aligned FLAC (48 kHz)     |
-| `vhs-tool export` | `6_export.sh` | TBC + aligned FLAC → lossless FFV1 + Opus audio      |
-| `vhs-tool encode` | `7_encode.sh` | FFV1 + Opus → [VapourSynth] → x265 → final MKV       |
-| `vhs-tool upload` | `8_upload.sh` | Final MKV → Internet Archive / YouTube upload folder |
-| `vhs-tool rf-resample` | `rf-resample.sh` | Downsample RF captures for archival (40 → 20 MSPS) |
-| `vhs-tool rf-trim` | `rf-trim.sh` | Trim noise from the end of synchronized RF captures    |
+| Command                | Purpose                                              |
+| ---------------------- | ---------------------------------------------------- |
+| `vhs-tool decode`      | Video RF FLAC → TBC + JSON (vhs-decode wrapper)      |
+| `vhs-tool audio`       | HiFi/Linear RF → decoded + aligned FLAC (48 kHz)     |
+| `vhs-tool export`      | TBC + aligned FLAC → lossless FFV1 + Opus audio      |
+| `vhs-tool encode`      | FFV1 + Opus → [VapourSynth] → x265 → final MKV       |
+| `vhs-tool upload`      | Final MKV → Internet Archive / YouTube upload folder |
+| `vhs-tool rf-resample` | Downsample RF captures for archival (40 → 20 MSPS)   |
+| `vhs-tool rf-trim`     | Trim noise from the end of synchronized RF captures  |
 
 ## Requirements
 
@@ -51,7 +49,7 @@ uv tool upgrade vhs-tool
 
 > The default paths for the tbc-* AppImages and output directories
 > (`./export`, `./final`) are relative — run `vhs-tool` from the
-> repository root, like the shell scripts.
+> repository root.
 
 ## Configuration
 
