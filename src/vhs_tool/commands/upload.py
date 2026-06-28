@@ -272,7 +272,9 @@ def copy_into(src: Path, dstdir: Path) -> None:
         return
     print(f"  copying: {src.name} ({human_size(src)})")
     if shutil.which("rsync"):
-        run(["rsync", "-a", "--info=progress2", src, dst])
+        # --no-o/--no-g: don't preserve owner/group (chgrp fails as non-root and
+        # aborts the copy; the archive folder doesn't need source ownership).
+        run(["rsync", "-a", "--no-o", "--no-g", "--info=progress2", src, dst])
     else:
         shutil.copy(src, dst)
 
@@ -424,6 +426,13 @@ def add_parser(subparsers) -> None:
         help="Target platform: ia | youtube (asked interactively if omitted)",
     )
     parser.add_argument(
+        "--base",
+        help="Tape base name driving RF capture lookup, decode-version detection, "
+        "capture date / TV-system / format detection and all output names "
+        "(folder + files). Default: derived from the MKV filename. Use this when "
+        "the RF capture is named differently from the final MKV.",
+    )
+    parser.add_argument(
         "--upload-dir",
         default=_CFG.paths.upload,
         help=f"Upload folder root (default: {_CFG.paths.upload})",
@@ -464,21 +473,37 @@ def cmd_upload(args: argparse.Namespace) -> int:
 
     platform = normalize_platform(args.platform or ask("Platform", "ia", ["ia", "youtube"]))
 
-    # Derive tape base name + locate the canonical final MKV
-    base = strip_profile_suffix(input_mkv.name.removesuffix(".mkv"))
+    # Locate the canonical final MKV (metadata source): strip any encode-profile
+    # suffix off the input name and prefer a sibling MKV without it.
+    mkv_base = strip_profile_suffix(input_mkv.name.removesuffix(".mkv"))
     mkv = input_mkv
-    canonical = input_mkv.parent / f"{base}.mkv"
-    if input_mkv.name.removesuffix(".mkv") != base and canonical.is_file():
+    canonical = input_mkv.parent / f"{mkv_base}.mkv"
+    if input_mkv.name.removesuffix(".mkv") != mkv_base and canonical.is_file():
         mkv = canonical
         print(f"Note: using {mkv} as metadata source (input had a profile suffix)")
 
-    info = gather_info(
-        input_mkv,
-        mkv,
-        base,
-        args.capture_dirs or list(_CFG.paths.captures),
-        Path(args.decoded_dir),
-    )
+    # Tape base name — drives RF capture lookup, decode-version detection,
+    # capture date / TV-system / format detection and every output name.
+    # Defaults to the MKV name; --base overrides it when the RF capture is named
+    # differently from the final MKV. A path may be passed (e.g. the RF capture
+    # path without its -video.flac suffix): the directory part is searched for
+    # the RF files, only the file name part becomes the base.
+    base = mkv_base
+    capture_dirs = args.capture_dirs or list(_CFG.paths.captures)
+    if args.base:
+        base_path = Path(args.base)
+        base = base_path.name
+        parent = str(base_path.parent)
+        if parent != ".":
+            capture_dirs = [parent, *capture_dirs]
+            print(
+                f"Note: using tape base '{base}' (overrides MKV name '{mkv_base}'); "
+                f"searching '{parent}' for RF captures"
+            )
+        else:
+            print(f"Note: using tape base '{base}' (overrides MKV name '{mkv_base}')")
+
+    info = gather_info(input_mkv, mkv, base, capture_dirs, Path(args.decoded_dir))
     print_summary(info, platform)
 
     if platform == "youtube":
