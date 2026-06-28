@@ -6,7 +6,7 @@ Port of tools/8_upload.sh (Step 3 of the publish pipeline).
             ├── Capture_Data/   RF data (video downsampled to 20 MSPS 8-bit,
             │                   hifi, linear, headswitch)
             ├── Video/          final MKV + .preview.mp4 (archive.org player)
-            ├── Pipeline/       vapoursynth_vhs.vpy, 6_export.sh, 7_encode.sh
+            ├── Pipeline/       vapoursynth_vhs.vpy (the filter chain)
             ├── [teletext/]     manually added for now (picked up if present)
             ├── Notes.txt       auto-filled from MKV metadata + prompts
             ├── _rules.conf     CAT.ALL
@@ -454,7 +454,8 @@ def add_parser(subparsers) -> None:
     parser.add_argument(
         "--tools-dir",
         default=_CFG.paths.tools,
-        help=f"Tools dir with rf-resample.sh + pipeline scripts (default: {_CFG.paths.tools})",
+        help=f"Tools dir holding the VapourSynth .vpy bundled into Pipeline/ "
+        f"(default: {_CFG.paths.tools})",
     )
     parser.set_defaults(func=cmd_upload)
 
@@ -627,7 +628,7 @@ def _upload_ia(info: TapeInfo, upload_dir: Path, tools_dir: Path) -> int:
     print(f"  1. Video RF → 20 MSPS 8-bit  ({resample_note})")
     print("  2. Copy RF files into Capture_Data/")
     print("  3. Copy final MKV + encode preview MP4 into Video/")
-    print("  4. Copy pipeline scripts, extract MKV cover attachment (if any)")
+    print("  4. Copy VapourSynth .vpy into Pipeline/, extract MKV cover attachment (if any)")
     print("  5. Write Notes.txt + _rules.conf")
     print("  6. Generate archive.sha256")
     print()
@@ -675,7 +676,7 @@ def _upload_ia(info: TapeInfo, upload_dir: Path, tools_dir: Path) -> int:
         print("  encoding preview MP4 (x264, for the archive.org player)...")
         ffmpeg_encode(item_mkv, preview_mp4, FFMPEG_PROFILES["archive-preview"], loglevel="warning")
 
-    # -- 4. Pipeline + cover ---------------------------------------------------------
+    # -- 4. Pipeline (.vpy) + cover --------------------------------------------------
     print()
     print("Step 4: Pipeline/ + cover...")
     for name in _CFG.upload.pipeline_files:

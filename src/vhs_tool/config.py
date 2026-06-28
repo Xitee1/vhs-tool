@@ -85,8 +85,9 @@ class Links:
 
 @dataclass(frozen=True)
 class Upload:
-    # Pipeline scripts copied into the IA item for reproducibility
-    pipeline_files: tuple[str, ...] = ("vapoursynth_vhs.vpy", "6_export.sh", "7_encode.sh")
+    # VapourSynth filter scripts copied into the IA item for reproducibility
+    # (the .vpy drives the picture, unlike the wrapper scripts which aren't shipped)
+    pipeline_files: tuple[str, ...] = ("vapoursynth_vhs.vpy",)
 
 
 @dataclass(frozen=True)
