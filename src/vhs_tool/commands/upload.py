@@ -57,6 +57,10 @@ _CFG = get_config()
 # Files excluded from archive.sha256 (metadata, not payload)
 CHECKSUM_EXCLUDE = {"archive.sha256", "Notes.txt", "_rules.conf"}
 
+# Placeholder for cross-platform links (IA/YouTube): the auto-derived URL is
+# usually wrong, so prompt with a placeholder the user fills in by hand instead.
+LINK_PLACEHOLDER = "{insert link}"
+
 _CAPTURE_DATE_RE = re.compile(r"-(\d{4})-(\d{2})-(\d{2})_\d{2}_\d{2}_\d{2}")
 _ATTACHMENT_RE = re.compile(r"^Attachment ID (\d+):.*file name '([^']+)'")
 
@@ -522,7 +526,7 @@ def _upload_youtube(info: TapeInfo, upload_dir: Path) -> int:
     yt_mkv = item_dir / f"{info.base}_youtube.mkv"
 
     # -- Prompts ---------------------------------------------------------------
-    ia_url = ask("Internet Archive link", f"https://archive.org/details/{info.ia_identifier}")
+    ia_url = ask("Internet Archive link", LINK_PLACEHOLDER)
     teletext = confirm("Teletext included?")
     extra_text = ask("Extra description text (optional)")
     recording_date = ask("Aufnahmedatum/-jahr (optional)", info.tag_date)
