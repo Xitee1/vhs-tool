@@ -43,8 +43,9 @@ errors — `cli.main()` prints it as `Error: ...` and exits 1.
 
 ## Conventions
 
-- **Minimal runtime dependencies**: jinja2 (template rendering) and rich
-  (interactive prompts); everything else is stdlib (argparse + subprocess +
+- **Minimal runtime dependencies**: jinja2 (template rendering) and questionary
+  (interactive prompts — line editing + select menus, via prompt_toolkit);
+  everything else is stdlib (argparse + subprocess +
   tomllib). The tool orchestrates external CLIs (ffmpeg, x265, mkvmerge,
   tbc-video-export, vspipe). Don't add dependencies without a clear win.
 - **Port fidelity first**: when porting a bash script, preserve defaults,
