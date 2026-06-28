@@ -59,7 +59,7 @@ CHECKSUM_EXCLUDE = {"archive.sha256", "Notes.txt", "_rules.conf"}
 
 # Placeholder for cross-platform links (IA/YouTube): the auto-derived URL is
 # usually wrong, so prompt with a placeholder the user fills in by hand instead.
-LINK_PLACEHOLDER = "{insert link}"
+LINK_PLACEHOLDER = "[insert link]"
 
 _CAPTURE_DATE_RE = re.compile(r"-(\d{4})-(\d{2})-(\d{2})_\d{2}_\d{2}_\d{2}")
 _ATTACHMENT_RE = re.compile(r"^Attachment ID (\d+):.*file name '([^']+)'")
