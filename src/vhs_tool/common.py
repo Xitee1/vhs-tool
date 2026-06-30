@@ -13,9 +13,7 @@ from datetime import datetime
 from fractions import Fraction
 from pathlib import Path
 
-# Do not import readline here: rich prints the prompt itself and calls input("")
-# with an empty prompt, so readline's line redraws would erase the question.
-from rich.prompt import Confirm, Prompt
+import questionary
 
 _TS_RE = re.compile(r"^\d{1,2}:\d{2}:\d{2}(\.\d{1,3})?$")
 _MK_DATE_RE = re.compile(
@@ -214,29 +212,51 @@ def to_matroska_date(value: str, tz: str = "+00:00") -> str:
 
 
 # -- Interactive prompts ---------------------------------------------------------
+#
+# questionary (prompt_toolkit) gives full line editing — arrow keys, Home/End,
+# word jumps, history — for free, plus arrow-key select menus for fixed choices.
+# We call `.unsafe_ask()` (not `.ask()`, which swallows Ctrl-C): Ctrl-C then
+# propagates as KeyboardInterrupt and aborts the command in cli.main(), while a
+# non-interactive stdin raises EOFError, which we map back to the default so
+# piped/non-interactive runs keep working.
+
+# Show the default as a dimmed "(default)" hint so it doesn't read as part of
+# the question. questionary renders the `instruction` text in the `instruction`
+# style class; the rest falls back to questionary's built-in defaults.
+_PROMPT_STYLE = questionary.Style([("instruction", "fg:#888888")])
 
 
 def ask(prompt: str, default: str = "", choices: list[str] | None = None) -> str:
-    """Prompt with the default shown in parentheses; plain Enter accepts it.
+    """Prompt for a string; plain Enter accepts the default.
 
-    Invalid choices re-ask; EOF (non-interactive stdin) falls back to the default.
+    With `choices`, shows an arrow-key select menu (default pre-selected);
+    otherwise a free-text field with line editing. The default is shown in
+    parentheses but left out of the input buffer (so you can just type over it);
+    an empty line accepts it. A non-interactive stdin also falls back to the
+    default; Ctrl-C aborts the command.
     """
     try:
-        return Prompt.ask(
-            prompt,
-            default=default,
-            choices=choices,
-            case_sensitive=False,
-            show_default=bool(default),
-        )
+        if choices:
+            answer = questionary.select(
+                prompt,
+                choices=choices,
+                default=default if default in choices else None,
+            ).unsafe_ask()
+        elif default:
+            answer = questionary.text(
+                prompt, instruction=f"({default}) ", style=_PROMPT_STYLE
+            ).unsafe_ask()
+        else:
+            answer = questionary.text(prompt).unsafe_ask()
     except EOFError:
         return default
+    return answer if answer != "" else default
 
 
 def confirm(prompt: str, default: bool = False) -> bool:
-    """Yes/no prompt ('[y/n] (y)'); EOF falls back to the default."""
+    """Yes/no prompt; a non-interactive stdin uses the default, Ctrl-C aborts."""
     try:
-        return Confirm.ask(prompt, default=default)
+        return questionary.confirm(prompt, default=default).unsafe_ask()
     except EOFError:
         return default
 
