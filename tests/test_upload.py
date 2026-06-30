@@ -3,6 +3,8 @@ import pytest
 from vhs_tool.commands.upload import (
     build_notes,
     build_youtube_description,
+    find_rf,
+    find_uncompressed_rf,
     ia_identifier,
     normalize_platform,
     parse_capture_date,
@@ -67,6 +69,29 @@ def test_parse_capture_date():
 
 def test_parse_capture_date_missing():
     assert parse_capture_date("Some_Tape_Without_Timestamp") == ("unknown", "unbekannt")
+
+
+def test_find_rf(tmp_path):
+    (tmp_path / "VHS_PAL_Tape_010-video.flac").touch()
+    assert find_rf([str(tmp_path)], "VHS_PAL_Tape_010", "-video.flac") is not None
+    assert find_rf([str(tmp_path)], "VHS_PAL_Tape_010", "-hifi.flac") is None
+
+
+def test_find_uncompressed_rf_flags_non_flac(tmp_path):
+    base = "VHS_PAL_Tape_010"
+    # FLAC captures are accepted (not flagged).
+    (tmp_path / f"{base}-video.flac").touch()
+    (tmp_path / f"{base}-headswitch.flac").touch()
+    # The 20 MSPS downsample and unrelated files must not be flagged.
+    (tmp_path / f"{base}-video.8bit.20msps.flac").touch()
+    (tmp_path / f"{base}-info.txt").touch()
+    assert find_uncompressed_rf([str(tmp_path)], base) == []
+
+    # Raw/other-format captures for known channels are flagged.
+    (tmp_path / f"{base}-headswitch.u8").touch()
+    (tmp_path / f"{base}-hifi.wav").touch()
+    flagged = sorted(p.name for p in find_uncompressed_rf([str(tmp_path)], base))
+    assert flagged == [f"{base}-headswitch.u8", f"{base}-hifi.wav"]
 
 
 def test_ia_identifier():
