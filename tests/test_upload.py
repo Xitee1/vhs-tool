@@ -85,10 +85,9 @@ def test_youtube_description_full():
         extra_text="Extra line.",
         chapters=[(10.0, "Intro"), (3675.0, "Part 2")],
     )
-    assert desc.startswith(f"{BASE}\n\nDigitalisiert mit vhs-decode.\n")
+    assert desc.startswith(f"{BASE}\n\nInfo:\nExtra line.\n\nDigitalisiert mit vhs-decode.\n")
     assert "Aufnahmedatum: 1998\n" in desc
     assert "Teletext: ja (im Internet Archive enthalten)\n" in desc
-    assert "Extra line.\n" in desc
     # First chapter starts at 10s ≥ 0.5s → implicit start chapter prepended
     assert "Kapitel:\n0:00 Start\n0:10 Intro\n1:01:15 Part 2\n" in desc
     assert desc.endswith("Domesday86 Discord: https://discord.gg/pVVrrxd\n")
