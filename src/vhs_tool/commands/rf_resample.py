@@ -108,11 +108,15 @@ def resample_file(
     suffix: str = "",
     flac_level: int = FLAC_LEVEL,
     dry_run: bool = False,
+    out_dir: Path | None = None,
 ) -> Path | None:
     """Resample one RF FLAC. Returns the output path, or None if nothing was produced.
 
     Skips (with a log line) when the file is missing, already at/below the target
     rate, or the output already exists (the existing output path is returned).
+
+    The output is written next to the source by default; pass ``out_dir`` to write
+    it elsewhere (e.g. straight into an upload folder, avoiding a copy afterwards).
     """
     check_deps("sox", "soxi", "flac")
 
@@ -136,7 +140,7 @@ def resample_file(
         return None
 
     out_suffix = suffix or default_suffix(bps, target_rate)
-    out = file.parent / f"{file.name.removesuffix('.flac')}{out_suffix}.flac"
+    out = (out_dir or file.parent) / f"{file.name.removesuffix('.flac')}{out_suffix}.flac"
     out_samples = samples * target_rate // src_rate
 
     log(f"    {src_rate} Hz → {target_rate} Hz ({target_rate / src_rate * 100:.1f}%)")

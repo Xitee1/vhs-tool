@@ -4,7 +4,7 @@ Port of tools/8_upload.sh (Step 3 of the publish pipeline).
 
   IA:       upload/<Tape>_IA/
             ├── Capture_Data/   RF data (video downsampled to 20 MSPS 8-bit,
-            │                   hifi, linear, headswitch)
+            │                   hifi, linear, headswitch, info.txt)
             ├── Video/          final MKV + .preview.mp4 (archive.org player)
             ├── Pipeline/       vapoursynth_vhs.vpy (the filter chain)
             ├── [teletext/]     manually added for now (picked up if present)
@@ -37,6 +37,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..common import (
+    RF_CHANNELS,
+    RF_EXTENSIONS,
     ToolError,
     ask,
     check_deps,
@@ -237,6 +239,33 @@ def find_rf(capture_dirs: list[str], base: str, suffix: str) -> Path | None:
     return None
 
 
+def find_uncompressed_rf(capture_dirs: list[str], base: str) -> list[Path]:
+    """RF capture files for this tape that are NOT FLAC-compressed.
+
+    The IA upload accepts only compressed (FLAC) RF. Any file named like an RF
+    channel for this tape (<base>-video/-hifi/-linear/-headswitch) but carrying a
+    raw/other extension (.u8, .wav, .ldf, ...) is collected so the run can abort
+    early with a clear message instead of silently shipping/omitting it.
+    """
+    forbidden = {
+        f"{base}{channel}{ext}"
+        for channel in RF_CHANNELS
+        for ext in RF_EXTENSIONS
+        if ext != ".flac"
+    }
+    found: list[Path] = []
+    for directory in capture_dirs:
+        root = Path(directory)
+        if not root.is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+            if len(Path(dirpath).relative_to(root).parts) > 2:
+                dirnames.clear()
+                continue
+            found.extend(Path(dirpath) / name for name in filenames if name in forbidden)
+    return found
+
+
 def detect_vhs_decode_version(decoded_dir: Path, base: str) -> str:
     """Detect the vhs-decode version from decode artifacts (.tbc.json, logs)."""
     version = ""
@@ -333,6 +362,7 @@ class TapeInfo:
     rf_hifi: Path | None
     rf_linear: Path | None
     rf_headswitch: Path | None
+    info_txt: Path | None
     vhs_decode_version: str
     ia_identifier: str
 
@@ -373,7 +403,10 @@ def gather_info(
         rf_video_20=find_rf(capture_dirs, base, "-video.8bit.20msps.flac"),
         rf_hifi=find_rf(capture_dirs, base, "-hifi.flac"),
         rf_linear=find_rf(capture_dirs, base, "-linear.flac"),
-        rf_headswitch=find_rf(capture_dirs, base, "-headswitch.u8"),
+        # FLAC only — uncompressed/other-format RF is rejected by the early check
+        # in cmd_upload (find_uncompressed_rf), so no .u8 fallback here.
+        rf_headswitch=find_rf(capture_dirs, base, "-headswitch.flac"),
+        info_txt=find_rf(capture_dirs, base, "-info.txt"),
         vhs_decode_version=detect_vhs_decode_version(decoded_dir, base),
         ia_identifier=ia_identifier(base),
     )
@@ -403,6 +436,7 @@ def print_summary(info: TapeInfo, platform: str) -> None:
         print(f"RF hifi:        {info.rf_hifi or '—'}")
         print(f"RF linear:      {info.rf_linear or '—'}")
         print(f"RF headswitch:  {info.rf_headswitch or '—'}")
+        print(f"Info txt:       {info.info_txt or '—'}")
         print(f"vhs-decode:     {info.vhs_decode_version or 'could not detect'}")
     hr()
     print()
@@ -507,6 +541,19 @@ def cmd_upload(args: argparse.Namespace) -> int:
             )
         else:
             print(f"Note: using tape base '{base}' (overrides MKV name '{mkv_base}')")
+
+    # IA accepts only FLAC-compressed RF — fail fast (before any heavy probing)
+    # if a name-matching capture has a raw/other extension, so it is fixed rather
+    # than silently shipped uncompressed or dropped.
+    if platform == "ia":
+        uncompressed = find_uncompressed_rf(capture_dirs, base)
+        if uncompressed:
+            listing = "\n".join(f"  {path}" for path in sorted(uncompressed))
+            raise ToolError(
+                "IA upload accepts only FLAC-compressed RF captures, but found "
+                f"non-FLAC file(s):\n{listing}\n"
+                "Compress them to .flac (e.g. with flac/sox) and re-run."
+            )
 
     info = gather_info(input_mkv, mkv, base, capture_dirs, Path(args.decoded_dir))
     print_summary(info, platform)
@@ -640,15 +687,23 @@ def _upload_ia(info: TapeInfo, upload_dir: Path, tools_dir: Path) -> int:
         print("Aborted.")
         return 0
 
+    capture_data = item_dir / "Capture_Data"
     for subdir in ("Capture_Data", "Video", "Pipeline"):
         (item_dir / subdir).mkdir(parents=True, exist_ok=True)
 
     # -- 1. Resample video RF to 20 MSPS -------------------------------------------
+    # The 20 MSPS downsample is only useful for the IA upload, so write it straight
+    # into Capture_Data/ (out_dir) instead of next to the source capture — avoids
+    # leaving a duplicate copy behind in the captures folder.
     print()
     print("Step 1: Video RF (20 MSPS 8-bit)...")
     if need_resample:
         rf_video_20 = rf_resample.resample_file(
-            info.rf_video, rf_resample.VIDEO_RATE, rf_resample.VIDEO_CUTOFF, "video"
+            info.rf_video,
+            rf_resample.VIDEO_RATE,
+            rf_resample.VIDEO_CUTOFF,
+            "video",
+            out_dir=capture_data,
         )
         if not rf_video_20 or not rf_video_20.is_file():
             raise ToolError(f"Resample did not produce a 20 MSPS video RF from {info.rf_video}")
@@ -656,9 +711,18 @@ def _upload_ia(info: TapeInfo, upload_dir: Path, tools_dir: Path) -> int:
     # -- 2. Copy RF files -----------------------------------------------------------
     print()
     print("Step 2: Copying RF files into Capture_Data/...")
-    for rf in (rf_video_20, info.rf_hifi, info.rf_linear, info.rf_headswitch):
-        if rf:
-            copy_into(rf, item_dir / "Capture_Data")
+    # rf_video_20 may already live in capture_data (freshly resampled there) — the
+    # parent check skips a needless self-copy; pre-existing 20 MSPS files and the
+    # other channels/info.txt are copied in.
+    for rf in (
+        rf_video_20,
+        info.rf_hifi,
+        info.rf_linear,
+        info.rf_headswitch,
+        info.info_txt,
+    ):
+        if rf and rf.parent != capture_data:
+            copy_into(rf, capture_data)
     if not rf_video_20 and not resample_target.is_file():
         print("  WARNING: no video RF in Capture_Data — add it manually and re-run.")
 
