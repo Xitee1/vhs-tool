@@ -528,7 +528,7 @@ def _upload_youtube(info: TapeInfo, upload_dir: Path) -> int:
     # -- Prompts ---------------------------------------------------------------
     ia_url = ask("Internet Archive link", LINK_PLACEHOLDER)
     teletext = confirm("Teletext included?")
-    extra_text = ask("Extra description text (optional)")
+    extra_text = ask("Info text (shown at the top, optional)")
     recording_date = ask("Aufnahmedatum/-jahr (optional)", info.tag_date)
 
     item_dir.mkdir(parents=True, exist_ok=True)

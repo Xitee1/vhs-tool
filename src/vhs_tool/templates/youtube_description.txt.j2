@@ -1,4 +1,9 @@
 {{ base }}
+{% if extra_text %}
+
+Info:
+{{ extra_text }}
+{% endif %}
 
 Digitalisiert mit vhs-decode.
 {% if recording_date %}
@@ -11,10 +16,6 @@ Internet Archive Link (originale Qualität + RF Capture): {{ ia_url }}
 Teletext: ja (im Internet Archive enthalten)
 {% else %}
 Teletext: nein
-{% endif %}
-{% if extra_text %}
-
-{{ extra_text }}
 {% endif %}
 {% if chapters %}
 
