@@ -1,8 +1,8 @@
 # vhs-tool — Agent Notes
 
-Unified Python CLI for a VHS RF-capture decode pipeline. It incrementally
-replaces the numbered bash scripts in the parent repo (`../*.sh`); each
-subcommand is a faithful port of one script.
+Unified Python CLI for a VHS RF-capture decode pipeline. Each subcommand is
+one stage of the pipeline, from decoding an RF capture through to preparing
+an upload.
 
 ## Architecture
 
@@ -25,14 +25,14 @@ src/vhs_tool/
                     files in the user dir ([paths] templates, default ./templates) override
                     the packaged ones by name
     commands/       one module per subcommand, each exposing add_parser(subparsers)
-        decode.py   port of ../3_decode.sh — video RF FLAC → TBC + JSON (vhs-decode wrapper)
-        audio.py    port of ../4_audio.sh — HiFi/Linear RF → decoded + aligned FLAC
-        export.py   port of ../6_export.sh — TBC + FLAC → FFV1 + Opus
-        encode.py   port of ../7_encode.sh — FFV1 + Opus → [VapourSynth] → x265 → MKV
-        upload.py   port of ../8_upload.sh — final MKV → IA/YouTube upload folder (interactive)
-        rf_resample.py  port of ../rf-resample.sh — downsample RF captures (used by upload)
+        decode.py   video RF FLAC → TBC + JSON (vhs-decode wrapper)
+        audio.py    HiFi/Linear RF → decoded + aligned FLAC
+        export.py   TBC + FLAC → FFV1 + Opus
+        encode.py   FFV1 + Opus → [VapourSynth] → x265 → MKV
+        upload.py   final MKV → IA/YouTube upload folder (interactive)
+        rf_resample.py  downsample RF captures, used by upload
         set_props.py    patch metadata on an existing MKV in place (mkvpropedit; PATCH)
-        trim.py         port of ../rf-trim.sh — trim noise from the end of synced RF captures
+        trim.py         trim noise from the end of synced RF captures
 tests/              pytest; covers pure logic (timestamps, cut segments, upload text files,
                     config loading, encoding profiles/commands)
 ```
@@ -48,9 +48,9 @@ errors — `cli.main()` prints it as `Error: ...` and exits 1.
   everything else is stdlib (argparse + subprocess +
   tomllib). The tool orchestrates external CLIs (ffmpeg, x265, mkvmerge,
   tbc-video-export, vspipe). Don't add dependencies without a clear win.
-- **Port fidelity first**: when porting a bash script, preserve defaults,
-  output filenames, console output, and exit behavior. The bash original
-  stays in `../` until parity is verified on a real tape.
+- **Compatibility with the established pipeline**: existing captures and
+  downstream steps rely on the current defaults, output filenames, console
+  output, and exit behavior — don't change them without an explicit reason.
 - **No new hardcoded setup values**: user-specific values (paths, binaries,
   hardware descriptions, static text) belong in `config.py` dataclasses
   (overridable via `vhs-tool.toml`); encode settings belong in `encoding.py`;
@@ -61,9 +61,9 @@ errors — `cli.main()` prints it as `Error: ...` and exits 1.
 - Preserve the VapourSynth env contract used by `vapoursynth_vhs.vpy`:
   `VHS_INPUT`, `VHS_DEINTERLACE`, `ENCODE_PROFILE`, `VHS_KEEP_SEGMENTS`.
 - mkvmerge exit code 1 means warnings, not failure — use `mkvmerge_tolerant()`.
-- `decode` and `audio` keep the env overrides of their bash originals
-  (`OUT_DIR`, `VHS_DECODE_BIN`, `AAA_BIN`, `HIFI_DECODE_BIN`, ...) — they are
-  read at module import as the argparse defaults, falling back to the config.
+- `decode` and `audio` honor env overrides (`OUT_DIR`, `VHS_DECODE_BIN`,
+  `AAA_BIN`, `HIFI_DECODE_BIN`, ...) — they are read at module import as the
+  argparse defaults, falling back to the config.
 - Default paths are relative (`./tools/...`, `./export`, `./final`): the tool
   is run from the parent repo root, not from this directory. The Jinja
   templates in `templates/` must keep rendering byte-identical output for the
