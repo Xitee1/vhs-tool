@@ -1,8 +1,10 @@
 # vhs-tool — Agent Notes
 
-Unified Python CLI for a VHS RF-capture decode pipeline. It incrementally
-replaces the numbered bash scripts in the parent repo (`../*.sh`); each
-subcommand is a faithful port of one script.
+Unified Python CLI for a VHS RF-capture decode pipeline. It replaced the
+numbered bash scripts that used to live in the parent pipeline directory;
+each subcommand started as a faithful port of one script (noted below). The
+bash originals have since been removed — this tool is the canonical
+implementation.
 
 ## Architecture
 
@@ -25,14 +27,14 @@ src/vhs_tool/
                     files in the user dir ([paths] templates, default ./templates) override
                     the packaged ones by name
     commands/       one module per subcommand, each exposing add_parser(subparsers)
-        decode.py   port of ../3_decode.sh — video RF FLAC → TBC + JSON (vhs-decode wrapper)
-        audio.py    port of ../4_audio.sh — HiFi/Linear RF → decoded + aligned FLAC
-        export.py   port of ../6_export.sh — TBC + FLAC → FFV1 + Opus
-        encode.py   port of ../7_encode.sh — FFV1 + Opus → [VapourSynth] → x265 → MKV
-        upload.py   port of ../8_upload.sh — final MKV → IA/YouTube upload folder (interactive)
-        rf_resample.py  port of ../rf-resample.sh — downsample RF captures (used by upload)
+        decode.py   video RF FLAC → TBC + JSON (vhs-decode wrapper; was 3_decode.sh)
+        audio.py    HiFi/Linear RF → decoded + aligned FLAC (was 4_audio.sh)
+        export.py   TBC + FLAC → FFV1 + Opus (was 6_export.sh)
+        encode.py   FFV1 + Opus → [VapourSynth] → x265 → MKV (was 7_encode.sh)
+        upload.py   final MKV → IA/YouTube upload folder (interactive; was 8_upload.sh)
+        rf_resample.py  downsample RF captures, used by upload (was rf-resample.sh)
         set_props.py    patch metadata on an existing MKV in place (mkvpropedit; PATCH)
-        trim.py         port of ../rf-trim.sh — trim noise from the end of synced RF captures
+        trim.py         trim noise from the end of synced RF captures (was rf-trim.sh)
 tests/              pytest; covers pure logic (timestamps, cut segments, upload text files,
                     config loading, encoding profiles/commands)
 ```
@@ -48,9 +50,10 @@ errors — `cli.main()` prints it as `Error: ...` and exits 1.
   everything else is stdlib (argparse + subprocess +
   tomllib). The tool orchestrates external CLIs (ffmpeg, x265, mkvmerge,
   tbc-video-export, vspipe). Don't add dependencies without a clear win.
-- **Port fidelity first**: when porting a bash script, preserve defaults,
-  output filenames, console output, and exit behavior. The bash original
-  stays in `../` until parity is verified on a real tape.
+- **Compatibility with the established pipeline**: the subcommands inherited
+  their defaults, output filenames, console output, and exit behavior from
+  the bash originals. Existing captures and downstream steps rely on them —
+  don't change defaults or output names without an explicit reason.
 - **No new hardcoded setup values**: user-specific values (paths, binaries,
   hardware descriptions, static text) belong in `config.py` dataclasses
   (overridable via `vhs-tool.toml`); encode settings belong in `encoding.py`;
