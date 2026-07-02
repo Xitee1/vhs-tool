@@ -1,8 +1,13 @@
+from pathlib import Path
+
 import pytest
 
+import vhs_tool.commands.upload as upload
 from vhs_tool.commands.upload import (
     build_notes,
     build_youtube_description,
+    copy_into,
+    encode_atomic,
     find_rf,
     find_uncompressed_rf,
     ia_identifier,
@@ -10,24 +15,8 @@ from vhs_tool.commands.upload import (
     parse_capture_date,
 )
 from vhs_tool.common import ToolError, seconds_to_hms, seconds_to_yt_ts
-from vhs_tool.encoding import strip_profile_suffix
 
 BASE = "VHS_PAL_Tape_0013_Matze-2026-06-05_17_17_14_02_00"
-
-
-@pytest.mark.parametrize(
-    ("name", "expected"),
-    [
-        (f"{BASE}_anime", BASE),
-        (f"{BASE}_liveaction", BASE),
-        (f"{BASE}_anime-youtube", BASE),
-        (f"{BASE}_liveaction-youtube", BASE),
-        (f"{BASE}_youtube", BASE),
-        (BASE, BASE),
-    ],
-)
-def test_strip_profile_suffix(name, expected):
-    assert strip_profile_suffix(name) == expected
 
 
 @pytest.mark.parametrize(
@@ -196,3 +185,63 @@ def test_notes_full():
     assert "HiFi Decode:            hifi-decode\n" in notes
     assert "- Linear audio is genuine linear from Panasonic NV-VP30 audio head\n" in notes
     assert "- Teletext extracted from VBI, see teletext/ folder\n" in notes
+
+
+def test_copy_into_fallback_copies_via_temp_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(upload.shutil, "which", lambda name: None)  # force shutil fallback
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"payload")
+    dstdir = tmp_path / "dst"
+    dstdir.mkdir()
+    copy_into(src, dstdir)
+    assert (dstdir / "src.bin").read_bytes() == b"payload"
+    assert not (dstdir / "src.bin.part").exists()
+
+
+def test_copy_into_fallback_failure_leaves_no_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(upload.shutil, "which", lambda name: None)
+
+    def broken_copy(src, dst):
+        Path(dst).write_bytes(b"half-writ")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(upload.shutil, "copy", broken_copy)
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"payload")
+    dstdir = tmp_path / "dst"
+    dstdir.mkdir()
+    with pytest.raises(OSError, match="disk full"):
+        copy_into(src, dstdir)
+    # Neither a partial on the final name nor a stray temp file is left behind.
+    assert list(dstdir.iterdir()) == []
+
+
+def test_encode_atomic_replaces_on_success(tmp_path, monkeypatch):
+    dst = tmp_path / "tape_youtube.mkv"
+    dst.write_text("old encode")
+    stale = tmp_path / "tape_youtube.part.mkv"
+    stale.write_text("stale partial")  # from a previous crash — must not survive
+
+    def fake_encode(src, out, profile, *, loglevel=None):
+        assert Path(out).suffix == ".mkv"  # muxer chosen by extension
+        Path(out).write_text("new encode")
+
+    monkeypatch.setattr(upload, "ffmpeg_encode", fake_encode)
+    encode_atomic(tmp_path / "in.mkv", dst, None)
+    assert dst.read_text() == "new encode"
+    assert not stale.exists()
+
+
+def test_encode_atomic_failure_keeps_old_file(tmp_path, monkeypatch):
+    dst = tmp_path / "tape.preview.mp4"
+    dst.write_text("old encode")
+
+    def broken_encode(src, out, profile, *, loglevel=None):
+        Path(out).write_text("half-writ")
+        raise ToolError("ffmpeg exited with code 1")
+
+    monkeypatch.setattr(upload, "ffmpeg_encode", broken_encode)
+    with pytest.raises(ToolError):
+        encode_atomic(tmp_path / "in.mkv", dst, None)
+    assert dst.read_text() == "old encode"
+    assert list(tmp_path.iterdir()) == [dst]  # no .part left behind

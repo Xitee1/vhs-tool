@@ -1,6 +1,8 @@
 import pytest
 
+from vhs_tool.cli import build_parser
 from vhs_tool.commands.audio import derive_base, parse_peak_gain, validate_hifi
+from vhs_tool.common import ToolError
 
 
 @pytest.mark.parametrize(
@@ -29,3 +31,14 @@ def test_validate_hifi():
     assert validate_hifi(5.0, 5.0) is True  # at threshold = valid (bash: fails only if <)
     assert validate_hifi(1.5, 5.0) is False
     assert validate_hifi(None, 5.0) is True  # unparsable → pass through unvalidated
+
+
+def test_hifi_output_overwrite_guard(tmp_path):
+    # Regression: with input dir == output dir, hifi-decode would write over its own
+    # RF input and the intermediate cleanup would then delete the original capture.
+    (tmp_path / "Tape-video.tbc.json").touch()
+    (tmp_path / "Tape-hifi.flac").touch()
+
+    args = build_parser().parse_args(["audio", str(tmp_path / "Tape"), "--output", str(tmp_path)])
+    with pytest.raises(ToolError, match="overwrite its RF input"):
+        args.func(args)

@@ -57,7 +57,7 @@ def add_metadata_args(parser: argparse.ArgumentParser, *, lang_default: str | No
 def build_global_tags_xml(pairs: Iterable[tuple[str, str]]) -> str:
     """Matroska global-tags XML for mkvmerge --global-tags / mkvpropedit --tags global:."""
     simples = "".join(
-        f"<Simple><Name>{name}</Name><String>{escape(value)}</String></Simple>"
+        f"<Simple><Name>{escape(name)}</Name><String>{escape(value)}</String></Simple>"
         for name, value in pairs
     )
     return (

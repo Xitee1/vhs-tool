@@ -46,7 +46,7 @@ def add_parser(subparsers) -> None:
 
 def _read_global_tags(mkv: Path) -> dict[str, str]:
     result = run(["mkvextract", mkv, "tags"], capture=True, check=False)
-    if result.returncode > 1:
+    if result.returncode not in (0, 1):
         detail = (result.stderr or "").strip()
         raise ToolError(f"mkvextract tags exited with code {result.returncode}: {detail}")
     return parse_global_tags(result.stdout or "")
@@ -113,7 +113,7 @@ def cmd_set_props(args: argparse.Namespace) -> int:
     finally:
         if tags_file is not None:
             tags_file.unlink(missing_ok=True)
-    if result.returncode > 1:
+    if result.returncode not in (0, 1):
         detail = (result.stderr or result.stdout or "").strip()
         raise ToolError(f"mkvpropedit exited with code {result.returncode}: {detail}")
 

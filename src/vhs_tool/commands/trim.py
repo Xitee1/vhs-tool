@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -227,6 +228,17 @@ def _copy_head(src: Path, dst: Path, nbytes: int) -> None:
 # =============================================================================
 
 
+def work_paths(file: Path) -> tuple[Path, Path]:
+    """(tmp, bak) working paths trim_file uses for `file`.
+
+    The tmp name inserts ".trimmed" before the extension so sox infers the
+    output format; the backup simply appends ".bak".
+    """
+    tmp = file.with_name(f"{file.stem}.trimmed{file.suffix}")
+    bak = file.with_name(f"{file.name}.bak")
+    return tmp, bak
+
+
 def trim_file(
     file: Path,
     keep_fraction: float,
@@ -259,9 +271,7 @@ def trim_file(
     # Same fraction → same real time, regardless of unit.
     keep = int(total * keep_fraction)
 
-    # Insert ".trimmed" before the extension so sox infers the output format.
-    tmp = file.with_name(f"{file.stem}.trimmed{file.suffix}")
-    bak = file.with_name(f"{file.name}.bak")
+    tmp, bak = work_paths(file)
 
     log(f"  {file.name}")
     if rate is not None:
@@ -269,6 +279,8 @@ def trim_file(
     else:
         log(f"    {unit}: {total} → {keep}")
 
+    # Defensive second layer — cmd_trim pre-flights the whole set before touching
+    # anything, but trim_file may be called on its own.
     if tmp.exists():
         log(f"    WARNING: stale temp file exists ({tmp.name}) — skipping")
         return False
@@ -277,13 +289,27 @@ def trim_file(
         return False
 
     # 1. Write trimmed output to a temp file (original untouched until success).
+    #    A failed/interrupted write must not leave a partial tmp behind — it
+    #    would poison the next run.
     if ext == ".flac":
-        run(["sox", file, "-C", str(flac_level), tmp, "trim", "0", f"{keep}s"], echo=verbose)
+        sox_cmd = ["sox", str(file), "-C", str(flac_level), str(tmp), "trim", "0", f"{keep}s"]
+        if verbose or dry_run:
+            print(f"  $ {shlex.join(sox_cmd)}", file=sys.stderr)
+        if not dry_run:
+            try:
+                run(sox_cmd)
+            except BaseException:
+                tmp.unlink(missing_ok=True)
+                raise
     else:  # .u8
         if verbose or dry_run:
             print(f"  $ head -c {keep} {file} > {tmp}", file=sys.stderr)
         if not dry_run:
-            _copy_head(file, tmp, keep)
+            try:
+                _copy_head(file, tmp, keep)
+            except BaseException:
+                tmp.unlink(missing_ok=True)
+                raise
 
     if dry_run:
         log("    (dry-run)")
@@ -293,10 +319,11 @@ def trim_file(
     file.rename(bak)
     tmp.rename(file)
 
-    # 3. Keep the original (as .bak) unless explicitly told to delete it.
+    # 3. The original stays as .bak. With --delete-original the caller removes
+    #    the backups only after ALL files completed, so a partial run stays
+    #    recoverable.
     if delete_original:
-        bak.unlink()
-        log("    replaced in-place (original deleted)")
+        log(f"    original kept for now: {bak.name} (deleted once all files succeed)")
     else:
         log(f"    original kept: {bak.name}")
     return True
@@ -403,6 +430,16 @@ def cmd_trim(args: argparse.Namespace) -> int:
     for f in trim_files:
         log(f"  · {f.name}")
 
+    # -- Pre-flight: refuse to touch ANY file while stale temp/backup files exist.
+    # Trimming only part of the set would silently desynchronize the channels.
+    stale = [p for f in trim_files for p in work_paths(f) if p.exists()]
+    if stale:
+        listing = "\n".join(f"  {p}" for p in stale)
+        raise ToolError(
+            "Stale temp/backup file(s) from a previous run found — remove or restore "
+            f"them first; no file was modified:\n{listing}"
+        )
+
     # -- Calculate keep fraction from the reference ----------------------------
     ref_samples = get_samples(ref_file)
     ref_rate = soxi(ref_file, "-r")
@@ -437,22 +474,39 @@ def cmd_trim(args: argparse.Namespace) -> int:
     # -- Trim each file --------------------------------------------------------
     errors = 0
     for file in trim_files:
-        ok = trim_file(
-            file,
-            result["keep_fraction"],
-            # The reference (video) sample count is already known — reuse it so a
-            # headerless FLAC is not scanned a second time.
-            known_samples=ref_samples if file == ref_file else None,
-            delete_original=args.delete_original,
-            dry_run=args.dry_run,
-            verbose=args.verbose,
-        )
+        try:
+            ok = trim_file(
+                file,
+                result["keep_fraction"],
+                # The reference (video) sample count is already known — reuse it so a
+                # headerless FLAC is not scanned a second time.
+                known_samples=ref_samples if file == ref_file else None,
+                delete_original=args.delete_original,
+                dry_run=args.dry_run,
+                verbose=args.verbose,
+            )
+        except ToolError as exc:
+            log(f"    ERROR: {exc}")
+            ok = False
         if not ok:
             errors += 1
 
     print(file=sys.stderr)
     if errors == 0:
+        # Delete the .bak originals only now that ALL files succeeded — a partial
+        # run must stay recoverable from the backups.
+        if args.delete_original and not args.dry_run:
+            for file in trim_files:
+                work_paths(file)[1].unlink(missing_ok=True)
+            log(f"Originals deleted ({len(trim_files)} .bak file(s)).")
         log(f"Done. All {len(trim_files)} file(s) trimmed successfully.")
-    else:
-        log(f"Done with {errors} warning(s).")
-    return 0
+        return 0
+
+    log(
+        f"WARNING: {errors} of {len(trim_files)} file(s) were NOT trimmed — the capture "
+        "set may be DESYNCHRONIZED. Restore the trimmed files from their .bak originals, "
+        "or fix the problem and trim the remaining files."
+    )
+    if args.delete_original:
+        log("  --delete-original was ignored; all .bak originals were kept.")
+    return 1

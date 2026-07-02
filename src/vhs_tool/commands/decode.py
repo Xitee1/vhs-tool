@@ -24,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-from ..common import ToolError, resolve_binary, run
+from ..common import ToolError, derive_base, log, resolve_binary, run
 from ..config import get_config
 
 _CFG = get_config()
@@ -39,23 +39,9 @@ TAPE_SPEED = os.environ.get("TAPE_SPEED", "")  # sp | lp | ep/slp (empty = defau
 SAMPLE_FREQ = os.environ.get("SAMPLE_FREQ", "40")  # MHz — 40 for CX+clockgen
 THREADS = os.environ.get("THREADS", "4")
 
-_EXTENSIONS = (".flac", ".raw", ".ldf", ".lds", ".r8", ".u8", ".r16", ".u16")
-
-
-def log(message: str = "") -> None:
-    print(f"[{time.strftime('%H:%M:%S')}] {message}", file=sys.stderr)
-
-
 # =============================================================================
 # Pure helpers (testable)
 # =============================================================================
-
-
-def derive_base(name: str) -> str:
-    """Strip extension and '-video' suffix so a full capture file name works as <base>."""
-    for ext in _EXTENSIONS:
-        name = name.removesuffix(ext)
-    return name.removesuffix("-video")
 
 
 def build_command(
@@ -107,7 +93,10 @@ def build_command(
         cmd += ["--start_fileloc", args.start_fileloc]
 
     if args.extra:
-        cmd += args.extra.split()
+        try:
+            cmd += shlex.split(args.extra)
+        except ValueError as exc:
+            raise ToolError(f"Cannot parse --extra: {exc}") from exc
 
     cmd += [str(input_file), str(output_base)]
     return cmd
@@ -198,7 +187,7 @@ def add_parser(subparsers) -> None:
 
     group = parser.add_argument_group("general")
     group.add_argument(
-        "--extra", default="", help="Extra vhs-decode flags (quoted string, split on spaces)"
+        "--extra", default="", help="Extra vhs-decode flags (quoted string, shell-style splitting)"
     )
     group.add_argument("--dry-run", action="store_true", help="Print commands without executing")
     group.add_argument("-v", "--verbose", action="store_true", help="Echo every executed command")

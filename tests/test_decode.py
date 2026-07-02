@@ -84,6 +84,14 @@ def test_build_command_range_and_extra():
     assert cmd[-5:] == ["--foo", "bar", "--baz", "in.flac", "out/tape-video"]
 
 
+def test_build_command_extra_quoted():
+    cmd = _build("--extra", "--note 'two words'")
+    assert cmd[-4:] == ["--note", "two words", "in.flac", "out/tape-video"]
+
+    with pytest.raises(ToolError, match="Cannot parse --extra"):
+        _build("--extra", "--note 'unbalanced")
+
+
 def test_overwrite_guard_with_dotted_base(tmp_path):
     # Regression: with_suffix() mangled dotted base names (Tape.2024-video → Tape.tbc),
     # so the guard checked the wrong path and existing output was silently overwritten.

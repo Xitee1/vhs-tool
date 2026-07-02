@@ -104,7 +104,12 @@ def video_duration(file: Path | str) -> float:
     value = _ffprobe(file, "-show_entries", "format=duration", "-of", "csv=p=0")
     if not value:
         raise ToolError(f"Could not determine video duration via ffprobe: {file}")
-    return float(value)
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ToolError(
+            f"Could not determine video duration of {file}: ffprobe returned {value!r}"
+        ) from exc
 
 
 def format_tag(file: Path | str, name: str) -> str:
@@ -126,7 +131,12 @@ def frame_rate(file: Path | str) -> Fraction:
     )
     if not value:
         raise ToolError(f"Could not determine frame rate via ffprobe: {file}")
-    return Fraction(value)
+    try:
+        return Fraction(value)
+    except (ValueError, ZeroDivisionError) as exc:
+        raise ToolError(
+            f"Could not determine frame rate of {file}: ffprobe returned {value!r}"
+        ) from exc
 
 
 # -- Timestamps ----------------------------------------------------------------
@@ -141,12 +151,11 @@ def ts_to_seconds(ts: str) -> float:
 
 
 def seconds_to_ts(seconds: float) -> str:
-    """Format seconds as 'HH:MM:SS.mmm'."""
-    seconds = max(seconds, 0.0)
-    hours = int(seconds // 3600)
-    minutes = int((seconds - hours * 3600) // 60)
-    secs = seconds - hours * 3600 - minutes * 60
-    return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
+    """Format seconds as 'HH:MM:SS.mmm' (rounding carries into minutes/hours)."""
+    ms = round(max(seconds, 0.0) * 1000)
+    hours, rem = divmod(ms, 3_600_000)
+    minutes, rem = divmod(rem, 60_000)
+    return f"{hours:02d}:{minutes:02d}:{rem // 1000:02d}.{rem % 1000:03d}"
 
 
 def seconds_to_hms(seconds: float) -> str:
@@ -176,6 +185,8 @@ def normalize_tz(tz: str) -> str:
     if not match:
         raise ToolError(f"Invalid timezone offset '{tz}' (expected +HH:MM, -HH:MM, or Z)")
     sign, hours, minutes = match.groups()
+    if int(hours) > 14 or int(minutes) > 59:  # real-world offsets span -12:00..+14:00
+        raise ToolError(f"Timezone offset '{tz}' out of range (expected -12:00..+14:00)")
     return f"{sign}{hours}:{minutes}"
 
 

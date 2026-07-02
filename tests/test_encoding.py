@@ -1,30 +1,5 @@
-import pytest
-
 import vhs_tool.encoding as encoding
-from vhs_tool.encoding import (
-    FFMPEG_PROFILES,
-    X265_PROFILES,
-    ffmpeg_encode,
-    profile_suffixes,
-    strip_profile_suffix,
-)
-
-
-def test_profile_suffixes_cover_all_x265_profiles():
-    suffixes = profile_suffixes()
-    for name in X265_PROFILES:
-        assert f"_{name}" in suffixes
-    assert "_youtube" in suffixes  # YouTube upscale encode from `vhs-tool upload`
-
-
-def test_profile_suffixes_longest_first():
-    lengths = [len(s) for s in profile_suffixes()]
-    assert lengths == sorted(lengths, reverse=True)
-
-
-@pytest.mark.parametrize("name", ["anime-youtube", "liveaction-youtube", "anime", "liveaction"])
-def test_strip_profile_suffix_roundtrip(name):
-    assert strip_profile_suffix(f"Tape_0001_{name}") == "Tape_0001"
+from vhs_tool.encoding import FFMPEG_PROFILES, ffmpeg_encode
 
 
 def _captured_cmd(monkeypatch):

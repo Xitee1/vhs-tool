@@ -104,15 +104,28 @@ _SECTION_TYPES = {f.name: f.default_factory for f in fields(Config)}
 
 
 def _build_section(name: str, data: dict, source: Path):
-    cls = _SECTION_TYPES[name]().__class__
-    known = {f.name for f in fields(cls)}
+    cls = _SECTION_TYPES[name]
+    defaults = {f.name: f.default for f in fields(cls)}
     kwargs = {}
     for key, value in data.items():
-        if key not in known:
+        if key not in defaults:
             raise ToolError(
-                f"Unknown key '{key}' in [{name}] of {source} (known: {', '.join(sorted(known))})"
+                f"Unknown key '{key}' in [{name}] of {source} "
+                f"(known: {', '.join(sorted(defaults))})"
             )
-        kwargs[key] = tuple(value) if isinstance(value, list) else value
+        # `from __future__ import annotations` makes field types strings, but every
+        # field has a literal default (str, or tuple for list-valued keys) to check against.
+        expected = type(defaults[key])
+        if expected is tuple:
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                raise ToolError(f"'{key}' in [{name}] of {source} must be a list of strings")
+            value = tuple(value)
+        elif not isinstance(value, expected):
+            raise ToolError(
+                f"'{key}' in [{name}] of {source} must be a {expected.__name__}, "
+                f"got {type(value).__name__}"
+            )
+        kwargs[key] = value
     return cls(**kwargs)
 
 

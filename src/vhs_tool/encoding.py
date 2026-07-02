@@ -55,24 +55,6 @@ X265_PROFILES: dict[str, list[str]] = {
     "liveaction-youtube": _x265_opts(tskip=False, aq_strength="0.80", deblock="-2:-2", sar=None),
 }
 
-# Output name suffixes not derived from an x265 profile name
-# ("_youtube" comes from the YouTube upscale encode in `vhs-tool upload`)
-_EXTRA_SUFFIXES = ("youtube",)
-
-
-def profile_suffixes() -> tuple[str, ...]:
-    """All '_<name>' suffixes an encode output file may carry, longest first."""
-    names = set(X265_PROFILES) | set(_EXTRA_SUFFIXES)
-    return tuple(f"_{name}" for name in sorted(names, key=len, reverse=True))
-
-
-def strip_profile_suffix(name: str) -> str:
-    """Strip encode profile suffixes (`_anime`, `_youtube`, ...) from a base name."""
-    for suffix in profile_suffixes():
-        name = name.removesuffix(suffix)
-    return name
-
-
 # =============================================================================
 # ffmpeg one-pass encodes
 # =============================================================================
