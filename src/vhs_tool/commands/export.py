@@ -31,6 +31,19 @@ LINEAR_BITRATE_MONO = "64k"
 PARTS = ("linear", "hifi", "video")
 
 
+def parse_only(value: str) -> list[str]:
+    """Parse a comma-separated --only value into a validated list of parts."""
+    parts = [p.strip() for p in value.split(",") if p.strip()]
+    if not parts:
+        raise argparse.ArgumentTypeError(f"expected at least one of: {', '.join(PARTS)}")
+    invalid = [p for p in parts if p not in PARTS]
+    if invalid:
+        raise argparse.ArgumentTypeError(
+            f"invalid part(s): {', '.join(invalid)} (choose from {', '.join(PARTS)})"
+        )
+    return parts
+
+
 def add_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "export",
@@ -50,10 +63,9 @@ def add_parser(subparsers) -> None:
     )
     parser.add_argument(
         "--only",
-        action="append",
-        choices=PARTS,
-        metavar="{linear,hifi,video}",
-        help="Export only specific parts (repeatable)",
+        type=parse_only,
+        metavar="{linear,hifi,video}[,...]",
+        help="Export only specific parts, comma-separated (e.g. --only linear,video)",
     )
     parser.add_argument(
         "--force-mono",

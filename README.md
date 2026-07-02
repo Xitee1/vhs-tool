@@ -123,8 +123,9 @@ skipped); the decoded intermediate is deleted after alignment unless
 vhs-tool export ./decoded/VHS_PAL_Tape__Name-2026-05-03_18_14_58_02_00
 # → export/<name>.{ffv1.mkv,linear.opus,hifi.opus}
 
-# Only re-export specific parts:
+# Only re-export specific parts (comma-separated):
 vhs-tool export --only video ./decoded/<name>
+vhs-tool export --only linear,video ./decoded/<name>
 ```
 
 ### Encode (step 4)
