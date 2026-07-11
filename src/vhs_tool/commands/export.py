@@ -120,11 +120,18 @@ def detect_channels(file: Path, label: str) -> str:
     rms_lines = [
         line for line in (proc.stderr + proc.stdout).splitlines() if "RMS level dB" in line
     ]
-    raw = rms_lines[-1].split("RMS level dB:")[-1].strip() if rms_lines else "0"
+    if proc.returncode != 0 or not rms_lines:
+        tail = "\n".join(proc.stderr.strip().splitlines()[-5:])
+        raise ToolError(
+            f"Channel detection failed for {file} (ffmpeg exit {proc.returncode}): {tail}"
+        )
+    raw = rms_lines[-1].split("RMS level dB:")[-1].strip()
     try:
-        diff_rms = float(raw)
-    except ValueError:
-        diff_rms = 0.0
+        diff_rms = float(raw)  # "-inf" (perfect dual-mono) parses fine
+    except ValueError as exc:
+        raise ToolError(
+            f"Channel detection failed for {file}: unexpected RMS value {raw!r}"
+        ) from exc
 
     if diff_rms < MONO_THRESHOLD_DB:
         print(f"  {label}: mono (L-R diff: {raw} dB)")
@@ -139,7 +146,9 @@ def transcode_opus(
     bitrate = bitrate_mono if mode == "mono" else bitrate_stereo
     print(f"  {label}: Opus {bitrate} {mode} → {dst}")
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y", "-i", src]
-    if mode == "mono":
+    # Downmix only multi-channel sources: on a 1-channel input the pan filter
+    # would treat the missing c1 as silence and attenuate the output by 6 dB.
+    if mode == "mono" and audio_channels(src) > 1:
         cmd += ["-af", "pan=1c|c0=0.5*c0+0.5*c1"]
     cmd += ["-c:a", "libopus", "-b:a", bitrate, "-vbr", "on", "-application", "audio", dst]
     run(cmd)

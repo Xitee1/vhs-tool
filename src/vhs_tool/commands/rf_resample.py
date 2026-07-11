@@ -65,7 +65,15 @@ def _pipeline(
     file: Path, out: Path, src_rate: int, bps: int, target_rate: int,
     taps: int, cutoff: str, flac_level: int,
 ) -> None:  # fmt: skip
-    """Decode → resample → lowpass → encode with optimal FLAC settings."""
+    """Decode → resample → lowpass → encode with optimal FLAC settings.
+
+    Encodes to '<out>.part' and renames onto ``out`` only after the whole
+    pipeline succeeded, so the final name never carries an incomplete file
+    (which the "output exists → skip" logic would otherwise trust on a re-run).
+    """
+    part = out.with_name(out.name + ".part")
+    part.unlink(missing_ok=True)  # stale partial from a previous crash
+
     decode = [
         "flac", "--silent", "-d", "--force-raw-format",
         "--sign=unsigned", "--endian=little", "--stdout", str(file),
@@ -80,22 +88,27 @@ def _pipeline(
         "flac", "--silent", f"-{flac_level}", f"--blocksize={BLOCKSIZE}", "--lax",
         f"--sample-rate={target_rate}", "--channels=1", f"--bps={bps}",
         "--sign=unsigned", "--endian=little",
-        "-f", "-", "-o", str(out),
+        "-f", "-", "-o", str(part),
     ]  # fmt: skip
 
-    decoder = subprocess.Popen(decode, stdout=subprocess.PIPE)
-    resampler = subprocess.Popen(resample, stdin=decoder.stdout, stdout=subprocess.PIPE)
-    decoder.stdout.close()
-    encoder = subprocess.Popen(encode, stdin=resampler.stdout)
-    resampler.stdout.close()
-    returncodes = (
-        ("flac (decode)", decoder.wait()),
-        ("sox", resampler.wait()),
-        ("flac (encode)", encoder.wait()),
-    )
-    for name, returncode in returncodes:
-        if returncode != 0:
-            raise ToolError(f"{name} exited with code {returncode}")
+    try:
+        decoder = subprocess.Popen(decode, stdout=subprocess.PIPE)
+        resampler = subprocess.Popen(resample, stdin=decoder.stdout, stdout=subprocess.PIPE)
+        decoder.stdout.close()
+        encoder = subprocess.Popen(encode, stdin=resampler.stdout)
+        resampler.stdout.close()
+        returncodes = (
+            ("flac (decode)", decoder.wait()),
+            ("sox", resampler.wait()),
+            ("flac (encode)", encoder.wait()),
+        )
+        for name, returncode in returncodes:
+            if returncode != 0:
+                raise ToolError(f"{name} exited with code {returncode}")
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    part.replace(out)
 
 
 def resample_file(

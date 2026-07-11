@@ -50,7 +50,7 @@ from ..common import (
     video_duration,
 )
 from ..config import get_config
-from ..encoding import FFMPEG_PROFILES, ffmpeg_encode, strip_profile_suffix
+from ..encoding import FFMPEG_PROFILES, FfmpegProfile, ffmpeg_encode
 from ..templates import render
 from . import rf_resample
 
@@ -307,9 +307,36 @@ def copy_into(src: Path, dstdir: Path) -> None:
     if shutil.which("rsync"):
         # --no-o/--no-g: don't preserve owner/group (chgrp fails as non-root and
         # aborts the copy; the archive folder doesn't need source ownership).
+        # rsync writes to a temp name and renames, so the copy is atomic.
         run(["rsync", "-a", "--no-o", "--no-g", "--info=progress2", src, dst])
     else:
-        shutil.copy(src, dst)
+        # Copy to a temp name and rename, so an interrupted copy never leaves a
+        # half-written file on the final name (which a re-run would then skip).
+        tmp = dst.with_name(dst.name + ".part")
+        try:
+            shutil.copy(src, tmp)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        tmp.replace(dst)
+
+
+def encode_atomic(
+    src: Path, dst: Path, profile: FfmpegProfile, *, loglevel: str | None = None
+) -> None:
+    """ffmpeg_encode() to a temp name, renamed onto dst only on success.
+
+    A failed or aborted encode never destroys an existing good file at dst.
+    The temp name keeps dst's extension so ffmpeg picks the right muxer.
+    """
+    tmp = dst.with_name(dst.stem + ".part" + dst.suffix)
+    tmp.unlink(missing_ok=True)  # stale partial from a previous crash
+    try:
+        ffmpeg_encode(src, tmp, profile, loglevel=loglevel)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    tmp.replace(dst)
 
 
 def walk_files(root: Path) -> list[tuple[str, int]]:
@@ -342,7 +369,6 @@ def write_checksums(item_dir: Path) -> int:
 @dataclass
 class TapeInfo:
     base: str
-    input_mkv: Path
     mkv: Path
     runtime: str
     tag_title: str
@@ -367,9 +393,7 @@ class TapeInfo:
     ia_identifier: str
 
 
-def gather_info(
-    input_mkv: Path, mkv: Path, base: str, capture_dirs: list[str], decoded_dir: Path
-) -> TapeInfo:
+def gather_info(mkv: Path, base: str, capture_dirs: list[str], decoded_dir: Path) -> TapeInfo:
     has_hifi_track = has_linear_track = False
     audio_summary = ""
     for channels, track_name in mkv_audio_tracks(mkv):
@@ -384,7 +408,6 @@ def gather_info(
 
     return TapeInfo(
         base=base,
-        input_mkv=input_mkv,
         mkv=mkv,
         runtime=seconds_to_hms(video_duration(mkv)),
         tag_title=format_tag(mkv, "title"),
@@ -467,8 +490,10 @@ def add_parser(subparsers) -> None:
         "--base",
         help="Tape base name driving RF capture lookup, decode-version detection, "
         "capture date / TV-system / format detection and all output names "
-        "(folder + files). Default: derived from the MKV filename. Use this when "
-        "the RF capture is named differently from the final MKV.",
+        "(folder + files). Default: the full MKV filename — encode-profile "
+        "suffixes (_anime, _youtube, ...) are NOT stripped. Use this when the RF "
+        "capture is named differently from the final MKV, e.g. when uploading a "
+        "profile-suffixed encode.",
     )
     parser.add_argument(
         "--upload-dir",
@@ -512,21 +537,14 @@ def cmd_upload(args: argparse.Namespace) -> int:
 
     platform = normalize_platform(args.platform or ask("Platform", "ia", ["ia", "youtube"]))
 
-    # Locate the canonical final MKV (metadata source): strip any encode-profile
-    # suffix off the input name and prefer a sibling MKV without it.
-    mkv_base = strip_profile_suffix(input_mkv.name.removesuffix(".mkv"))
-    mkv = input_mkv
-    canonical = input_mkv.parent / f"{mkv_base}.mkv"
-    if input_mkv.name.removesuffix(".mkv") != mkv_base and canonical.is_file():
-        mkv = canonical
-        print(f"Note: using {mkv} as metadata source (input had a profile suffix)")
-
     # Tape base name — drives RF capture lookup, decode-version detection,
     # capture date / TV-system / format detection and every output name.
-    # Defaults to the MKV name; --base overrides it when the RF capture is named
-    # differently from the final MKV. A path may be passed (e.g. the RF capture
-    # path without its -video.flac suffix): the directory part is searched for
-    # the RF files, only the file name part becomes the base.
+    # Defaults to the full MKV name (encode-profile suffixes like _anime are
+    # purely informational and never stripped); --base overrides it when the RF
+    # capture is named differently from the final MKV. A path may be passed
+    # (e.g. the RF capture path without its -video.flac suffix): the directory
+    # part is searched for the RF files, only the file name part becomes the base.
+    mkv_base = input_mkv.name.removesuffix(".mkv")
     base = mkv_base
     capture_dirs = args.capture_dirs or list(_CFG.paths.captures)
     if args.base:
@@ -555,7 +573,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
                 "Compress them to .flac (e.g. with flac/sox) and re-run."
             )
 
-    info = gather_info(input_mkv, mkv, base, capture_dirs, Path(args.decoded_dir))
+    info = gather_info(input_mkv, base, capture_dirs, Path(args.decoded_dir))
     print_summary(info, platform)
 
     if platform == "youtube":
@@ -596,24 +614,19 @@ def _upload_youtube(info: TapeInfo, upload_dir: Path) -> int:
     print(f"description.txt written: {item_dir / 'description.txt'}")
 
     # -- Encode (last: takes long) -------------------------------------------------
+    overwrite = False
     if yt_mkv.is_file():
         print(f"YouTube encode exists: {yt_mkv}")
-        if confirm("Overwrite (re-encode)?"):
-            yt_mkv.unlink()
-    if yt_mkv.is_file():
+        overwrite = confirm("Overwrite (re-encode)?")
+    if yt_mkv.is_file() and not overwrite:
         print("Keeping existing encode.")
-    elif info.input_mkv != info.mkv and info.input_mkv.is_file():
-        # User passed an existing *_youtube.mkv → reuse it
-        print(f"Using existing YouTube encode: {info.input_mkv}")
-        copy_into(info.input_mkv, item_dir)
-        if info.input_mkv.name != yt_mkv.name:
-            (item_dir / info.input_mkv.name).rename(yt_mkv)
     else:
         profile = FFMPEG_PROFILES["youtube-upscale"]
         print()
         print(f"YouTube encode ({profile.describe()}): this takes a while.")
         if confirm("Start encode now?", default=True):
-            ffmpeg_encode(info.mkv, yt_mkv, profile)
+            # The old encode (if any) stays intact until the new one succeeded.
+            encode_atomic(info.mkv, yt_mkv, profile)
         else:
             print("Skipped. Re-run the script later to encode.")
 
@@ -742,7 +755,7 @@ def _upload_ia(info: TapeInfo, upload_dir: Path, tools_dir: Path) -> int:
         print(f"  preview exists, skipping: {preview_mp4}")
     else:
         print("  encoding preview MP4 (x264, for the archive.org player)...")
-        ffmpeg_encode(item_mkv, preview_mp4, FFMPEG_PROFILES["archive-preview"], loglevel="warning")
+        encode_atomic(item_mkv, preview_mp4, FFMPEG_PROFILES["archive-preview"], loglevel="warning")
 
     # -- 4. Pipeline (.vpy) + cover --------------------------------------------------
     print()

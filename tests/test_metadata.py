@@ -18,6 +18,11 @@ def test_build_global_tags_xml_escapes_values():
     assert "<String>Tom &amp; Jerry &lt;1998&gt;</String>" in xml
 
 
+def test_build_global_tags_xml_escapes_names_roundtrip():
+    # A tag name with XML special characters must survive a build → parse round trip.
+    assert parse_global_tags(build_global_tags_xml([("A&B", "x")])) == {"A&B": "x"}
+
+
 def test_parse_global_tags_skips_per_track_and_keeps_globals():
     # Mirrors `mkvextract tags` output: BOM, a global tag, and a per-track stats tag.
     xml = (

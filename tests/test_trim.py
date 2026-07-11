@@ -1,11 +1,17 @@
+import argparse
+from pathlib import Path
+
 import pytest
 
+from vhs_tool.commands import trim
 from vhs_tool.commands.trim import (
     compute_trim,
     derive_base,
     fmt_timestamp,
     parse_timestamp,
     resolve_mode,
+    trim_file,
+    work_paths,
 )
 from vhs_tool.common import ToolError
 
@@ -111,3 +117,162 @@ def test_compute_trim_nothing_to_trim():
     # end == full duration (offset 0, keep == 10s) → nothing to remove
     with pytest.raises(ToolError, match="Nothing to trim"):
         compute_trim("end", 10.0, ref_samples=100_000_000, ref_rate=10_000, offset=0)
+
+
+# =============================================================================
+# trim_file / cmd_trim (filesystem behavior; sox/soxi are monkeypatched)
+# =============================================================================
+
+SAMPLES = 100_000_000  # with rate 10000 Hz × rf_scale 1000 → 10 s of RF
+
+
+@pytest.fixture
+def patched_io(monkeypatch):
+    """Stub out the external sox/soxi dependencies of the trim module."""
+    monkeypatch.setattr(trim, "check_deps", lambda *cmds: None)
+    monkeypatch.setattr(trim, "get_samples", lambda file: SAMPLES)
+    monkeypatch.setattr(trim, "soxi", lambda file, flag: 10_000)
+
+
+def _sox_ok(cmd, **kwargs):
+    """Successful sox stand-in: writes the tmp output file (argv index 4)."""
+    Path(cmd[4]).write_bytes(b"trimmed")
+
+
+def _sox_fail(cmd, **kwargs):
+    """Failing sox stand-in: leaves a partial tmp behind, then errors out."""
+    Path(cmd[4]).write_bytes(b"partial")
+    raise ToolError("sox exited with code 2")
+
+
+def _args(base, **overrides):
+    ns = argparse.Namespace(
+        base=str(base),
+        end=None,
+        trim="2",
+        delete_original=False,
+        offset=4.0,
+        rf_scale=1000,
+        dry_run=False,
+        verbose=False,
+    )
+    for key, value in overrides.items():
+        setattr(ns, key, value)
+    return ns
+
+
+def test_trim_file_dry_run_flac_runs_nothing(tmp_path, monkeypatch, patched_io):
+    calls = []
+    monkeypatch.setattr(trim, "run", lambda cmd, **kw: calls.append(cmd))
+    file = tmp_path / "Tape-video.flac"
+    file.write_bytes(b"original")
+
+    assert trim_file(file, 0.8, known_samples=SAMPLES, dry_run=True) is True
+
+    assert calls == []  # sox must not be executed in dry-run mode
+    tmp, bak = work_paths(file)
+    assert not tmp.exists()
+    assert not bak.exists()
+    assert file.read_bytes() == b"original"
+
+
+def test_trim_file_failed_sox_unlinks_tmp(tmp_path, monkeypatch, patched_io):
+    monkeypatch.setattr(trim, "run", _sox_fail)
+    file = tmp_path / "Tape-video.flac"
+    file.write_bytes(b"original")
+
+    with pytest.raises(ToolError, match="sox exited"):
+        trim_file(file, 0.8, known_samples=SAMPLES)
+
+    tmp, bak = work_paths(file)
+    assert not tmp.exists()  # partial output must not poison the next run
+    assert not bak.exists()
+    assert file.read_bytes() == b"original"
+
+
+def test_cmd_trim_preflight_refuses_stale_files(tmp_path, monkeypatch, patched_io):
+    calls = []
+    monkeypatch.setattr(trim, "run", lambda cmd, **kw: calls.append(cmd))
+    video = tmp_path / "Tape-video.flac"
+    hifi = tmp_path / "Tape-hifi.flac"
+    video.write_bytes(b"video")
+    hifi.write_bytes(b"hifi")
+    work_paths(hifi)[1].write_bytes(b"stale")  # leftover hifi backup
+
+    with pytest.raises(ToolError, match="Stale temp/backup"):
+        trim.cmd_trim(_args(tmp_path / "Tape"))
+
+    assert calls == []  # nothing was touched, not even the clean video file
+    assert video.read_bytes() == b"video"
+
+
+def test_cmd_trim_delete_original_deferred_until_all_succeed(tmp_path, monkeypatch, patched_io):
+    def fake_run(cmd, **kwargs):
+        if "hifi" in Path(cmd[1]).name:
+            _sox_fail(cmd)
+        _sox_ok(cmd)
+
+    monkeypatch.setattr(trim, "run", fake_run)
+    video = tmp_path / "Tape-video.flac"
+    hifi = tmp_path / "Tape-hifi.flac"
+    video.write_bytes(b"video")
+    hifi.write_bytes(b"hifi")
+
+    rc = trim.cmd_trim(_args(tmp_path / "Tape", delete_original=True))
+
+    assert rc == 1  # a failed file must not exit 0
+    # video was trimmed, but its backup survives because hifi failed
+    assert video.read_bytes() == b"trimmed"
+    assert work_paths(video)[1].read_bytes() == b"video"
+    # the failed hifi is untouched and left no tmp behind
+    assert hifi.read_bytes() == b"hifi"
+    assert not work_paths(hifi)[0].exists()
+    assert not work_paths(hifi)[1].exists()
+
+
+def test_cmd_trim_delete_original_after_full_success(tmp_path, monkeypatch, patched_io):
+    monkeypatch.setattr(trim, "run", _sox_ok)
+    video = tmp_path / "Tape-video.flac"
+    hifi = tmp_path / "Tape-hifi.flac"
+    video.write_bytes(b"video")
+    hifi.write_bytes(b"hifi")
+
+    rc = trim.cmd_trim(_args(tmp_path / "Tape", delete_original=True))
+
+    assert rc == 0
+    assert video.read_bytes() == b"trimmed"
+    assert hifi.read_bytes() == b"trimmed"
+    assert not work_paths(video)[1].exists()
+    assert not work_paths(hifi)[1].exists()
+
+
+def test_cmd_trim_errors_return_one(tmp_path, monkeypatch, patched_io):
+    monkeypatch.setattr(trim, "run", _sox_fail)
+    video = tmp_path / "Tape-video.flac"
+    video.write_bytes(b"video")
+
+    rc = trim.cmd_trim(_args(tmp_path / "Tape"))
+
+    assert rc == 1
+    assert video.read_bytes() == b"video"
+    assert not work_paths(video)[0].exists()
+
+
+def test_cmd_trim_dry_run_leaves_no_files(tmp_path, monkeypatch, patched_io):
+    calls = []
+    monkeypatch.setattr(trim, "run", lambda cmd, **kw: calls.append(cmd))
+    video = tmp_path / "Tape-video.flac"
+    hifi = tmp_path / "Tape-hifi.flac"
+    video.write_bytes(b"video")
+    hifi.write_bytes(b"hifi")
+
+    rc = trim.cmd_trim(_args(tmp_path / "Tape", dry_run=True, delete_original=True))
+
+    assert rc == 0
+    assert calls == []
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "Tape-hifi.flac",
+        "Tape-video.flac",
+    ]
+    assert video.read_bytes() == b"video"
+    assert hifi.read_bytes() == b"hifi"

@@ -75,6 +75,34 @@ def test_unknown_key_rejected(tmp_path):
         load_config(file)
 
 
+def test_wrong_scalar_type_rejected(tmp_path):
+    file = tmp_path / "vhs-tool.toml"
+    file.write_text("[defaults]\nlang = 5\n", encoding="utf-8")
+    with pytest.raises(ToolError, match=r"'lang' in \[defaults\].*must be a str, got int"):
+        load_config(file)
+
+
+def test_string_for_list_field_rejected(tmp_path):
+    file = tmp_path / "vhs-tool.toml"
+    file.write_text("[paths]\ncaptures = './captures'\n", encoding="utf-8")
+    with pytest.raises(ToolError, match=r"'captures' in \[paths\].*must be a list of strings"):
+        load_config(file)
+
+
+def test_list_of_ints_rejected(tmp_path):
+    file = tmp_path / "vhs-tool.toml"
+    file.write_text("[paths]\ncaptures = [1, 2]\n", encoding="utf-8")
+    with pytest.raises(ToolError, match=r"'captures' in \[paths\].*must be a list of strings"):
+        load_config(file)
+
+
+def test_valid_list_becomes_tuple(tmp_path):
+    file = tmp_path / "vhs-tool.toml"
+    file.write_text('[upload]\npipeline_files = ["a.vpy", "b.vpy"]\n', encoding="utf-8")
+    cfg = load_config(file)
+    assert cfg.upload.pipeline_files == ("a.vpy", "b.vpy")
+
+
 def test_invalid_toml_rejected(tmp_path):
     file = tmp_path / "vhs-tool.toml"
     file.write_text("[paths\n", encoding="utf-8")

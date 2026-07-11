@@ -25,6 +25,7 @@ from pathlib import Path
 from ..common import (
     ToolError,
     check_deps,
+    confirm,
     frame_rate,
     run,
     seconds_to_ts,
@@ -152,7 +153,7 @@ def mkvmerge_tolerant(mkvmerge_args: list) -> None:
     Warnings are NORMAL for raw-HEVC mux and packet-boundary cuts.
     """
     result = run(["mkvmerge", *mkvmerge_args], check=False)
-    if result.returncode > 1:
+    if result.returncode not in (0, 1):
         raise ToolError(
             f"mkvmerge exited with code {result.returncode} "
             f"(args: {shlex.join(str(a) for a in mkvmerge_args)})"
@@ -397,6 +398,13 @@ def cmd_encode(args: argparse.Namespace) -> int:
 
     output = args.output or str(Path(_CFG.paths.final) / f"{Path(input_base).name}_{args.profile}")
 
+    # Guard against silently overwriting an existing final MKV — BEFORE the
+    # multi-hour Step-1 encode. Non-interactive runs keep today's behavior
+    # (confirm() returns the default on EOF).
+    target = Path(f"{output}.test.mkv" if args.test else f"{output}.mkv")
+    if target.exists() and not confirm(f"{target} exists — overwrite?", default=True):
+        raise ToolError("Aborted — output exists")
+
     vpy_script: Path | None = None
     if args.vpy:
         vpy_script = Path(args.vpy)
@@ -628,7 +636,7 @@ def _encode(
         if not cover_path.is_file():
             print(f"  Warning: Cover image not found, skipping: {cover}")
             continue
-        mime = "image/png" if cover_path.suffix == ".png" else "image/jpeg"
+        mime = "image/png" if cover_path.suffix.lower() == ".png" else "image/jpeg"
         if first_cover:
             name = f"cover{cover_path.suffix}"
             description = "Cover"

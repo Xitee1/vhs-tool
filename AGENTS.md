@@ -16,8 +16,7 @@ src/vhs_tool/
                     the location); frozen dataclasses with built-in defaults for paths,
                     binaries, defaults (lang/tv_system/...), hardware, links, upload
     encoding.py     single home for all encode settings: X265_PROFILES (publish encodes),
-                    FFMPEG_PROFILES + ffmpeg_encode() (YouTube upscale, archive.org preview),
-                    profile_suffixes()/strip_profile_suffix()
+                    FFMPEG_PROFILES + ffmpeg_encode() (YouTube upscale, archive.org preview)
     metadata.py     MKV metadata shared by encode + set-props: add_metadata_args()
                     (title/source/publisher/date/comment/lang flags), TAG_FIELDS
                     (arg→Matroska tag), build_global_tags_xml()/parse_global_tags()

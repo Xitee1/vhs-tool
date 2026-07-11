@@ -33,7 +33,7 @@ import sys
 import time
 from pathlib import Path
 
-from ..common import ToolError, resolve_binary
+from ..common import ToolError, derive_base, log, resolve_binary
 from ..config import get_config
 
 _CFG = get_config()
@@ -59,22 +59,9 @@ HIFI_PEAK_GAIN_MIN = os.environ.get("HIFI_PEAK_GAIN_MIN", "5")
 _PEAK_GAIN_RE = re.compile(r"Peak gain is ([0-9.]+)")
 
 
-def log(message: str = "") -> None:
-    print(f"[{time.strftime('%H:%M:%S')}] {message}", file=sys.stderr)
-
-
 # =============================================================================
 # Pure helpers (testable)
 # =============================================================================
-
-
-def derive_base(name: str) -> str:
-    """Strip extension and channel suffixes so any capture file name works as <base>."""
-    for ext in (".flac", ".wav"):
-        name = name.removesuffix(ext)
-    for channel in ("-hifi", "-linear"):
-        name = name.removesuffix(channel)
-    return name
 
 
 def parse_peak_gain(text: str) -> float | None:
@@ -363,6 +350,17 @@ def cmd_audio(args: argparse.Namespace) -> int:
         args.skip_linear = True
     if args.skip_hifi and args.skip_linear:
         raise ToolError("Nothing to do - neither HiFi nor Linear input available.")
+
+    # hifi-decode must not write over (and later delete) its own RF input
+    if (
+        not args.skip_hifi
+        and not args.skip_hifi_decode
+        and Path(args.hifi_file).resolve() == paths["hifi_decoded"].resolve()
+    ):
+        raise ToolError(
+            f"hifi-decode output would overwrite its RF input: {args.hifi_file}\n"
+            "  (the output directory equals the RF input location — pass a different --output)"
+        )
 
     # -- Tool checks ----------------------------------------------------------
     if shutil.which(FFMPEG_BIN) is None:
