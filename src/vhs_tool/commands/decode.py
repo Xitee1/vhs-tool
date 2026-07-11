@@ -68,10 +68,8 @@ def build_command(
         cmd.append("--nld")
     if args.sub_deemph:
         cmd.append("--sd")
-    if args.recheck_phase:
-        cmd.append("--recheck_phase")
     if args.dctp:
-        cmd.append("-dctp")
+        cmd.append("--dctp")
     if args.use_saved_levels:
         cmd.append("--use_saved_levels")
     if args.overwrite:
@@ -155,9 +153,6 @@ def add_parser(subparsers) -> None:
     )
     group.add_argument("--nld", action="store_true", help="Enable non-linear deemphasis")
     group.add_argument("--sub-deemph", action="store_true", help="Enable sub deemphasis")
-    group.add_argument(
-        "--recheck-phase", action="store_true", help="Re-check chroma phase per field"
-    )
     group.add_argument(
         "--dctp",
         action="store_true",

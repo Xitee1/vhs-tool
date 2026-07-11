@@ -46,7 +46,7 @@ class Binaries:
     hifi_decode: str = "./tools/vhs-decode/.venv/bin/hifi-decode"
     aaa: str = "./tools/vhs-decode-aaa-1.0.2-x86_64.appimage"
     tbc_video_export: str = "./tools/tbc-video-export.AppImage"
-    tbc_tools: str = "./tools/tbc-tools.v0.2.7/tbc-tools-x86_64.AppImage"
+    tbc_tools: str = "./tools/tbc-tools/tbc-tools-x86_64.AppImage"
     tbc_export_config: str = "./tools/tbc-video-export.json"
 
 
@@ -57,7 +57,7 @@ class Defaults:
     tv_system: str = "pal"  # pal | ntsc | pal-m | ntsc-j | mesecam
     tape_format: str = "vhs"  # vhs | vhshq | svhs | umatic | ...
     extra_decode_params: str = "--ire0_adjust"  # Notes.txt "Extra parameters" default
-    vhs_decode_version: str = "v0.3.9"  # Notes.txt fallback when not detectable
+    vhs_decode_version: str = "v0.4.0"  # Notes.txt fallback when not detectable
 
 
 @dataclass(frozen=True)

@@ -23,7 +23,7 @@
 #hifi_decode = "./tools/vhs-decode/.venv/bin/hifi-decode"
 #aaa = "./tools/vhs-decode-aaa-1.0.2-x86_64.appimage"
 #tbc_video_export = "./tools/tbc-video-export.AppImage"
-#tbc_tools = "./tools/tbc-tools.v0.2.7/tbc-tools-x86_64.AppImage"
+#tbc_tools = "./tools/tbc-tools/tbc-tools-x86_64.AppImage"
 #tbc_export_config = "./tools/tbc-video-export.json"
 
 [defaults]
@@ -36,7 +36,7 @@
 # Notes.txt "Extra parameters" prompt default
 #extra_decode_params = "--ire0_adjust"
 # Notes.txt version fallback when not detectable from decode artifacts
-#vhs_decode_version = "v0.3.9"
+#vhs_decode_version = "v0.4.0"
 
 # Capture hardware description — verbatim text for Notes.txt
 [hardware]

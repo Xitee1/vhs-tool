@@ -48,15 +48,14 @@ def test_build_command_disable_defaults():
 
 def test_build_command_flags():
     cmd = _build(
-        "--speed", "lp", "--chroma-trap", "--nld", "--sub-deemph", "--recheck-phase",
+        "--speed", "lp", "--chroma-trap", "--nld", "--sub-deemph",
         "--dctp", "--use-saved-levels", "--overwrite", "--sharpness", "50",
     )  # fmt: skip
     for flag in (
         "--ct",
         "--nld",
         "--sd",
-        "--recheck_phase",
-        "-dctp",
+        "--dctp",
         "--use_saved_levels",
         "--overwrite",
     ):
