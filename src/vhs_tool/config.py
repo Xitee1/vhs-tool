@@ -48,6 +48,7 @@ class Binaries:
     tbc_video_export: str = "./tools/tbc-video-export.AppImage"
     tbc_tools: str = "./tools/tbc-tools/tbc-tools-x86_64.AppImage"
     tbc_export_config: str = "./tools/tbc-video-export.json"
+    teletext: str = "./tools/vhs-decode/.venv/bin/teletext"  # ali1234/vhs-teletext
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,9 @@ class Defaults:
     timezone: str = "+00:00"  # offset for Matroska Segment dates lacking one (UTC)
     tv_system: str = "pal"  # pal | ntsc | pal-m | ntsc-j | mesecam
     tape_format: str = "vhs"  # vhs | vhshq | svhs | umatic | ...
+    # G0 national subset for rendering teletext (a `teletext` charset key, e.g.
+    # "ger"). Empty leaves the choice to vhs-teletext, which assumes English.
+    teletext_language: str = ""
     extra_decode_params: str = "--ire0_adjust"  # Notes.txt "Extra parameters" default
     vhs_decode_version: str = "v0.4.0"  # Notes.txt fallback when not detectable
 

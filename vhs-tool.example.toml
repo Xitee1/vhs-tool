@@ -25,6 +25,8 @@
 #tbc_video_export = "./tools/tbc-video-export.AppImage"
 #tbc_tools = "./tools/tbc-tools/tbc-tools-x86_64.AppImage"
 #tbc_export_config = "./tools/tbc-video-export.json"
+# ali1234/vhs-teletext — used by `vhs-tool process-teletext`
+#teletext = "./tools/vhs-decode/.venv/bin/teletext"
 
 [defaults]
 # Audio language code for muxing
@@ -33,6 +35,10 @@
 #tv_system = "pal"
 # vhs | vhshq | svhs | umatic | ...
 #tape_format = "vhs"
+# G0 national subset `process-teletext` renders the html pages with — a charset
+# key your vhs-teletext knows (see `teletext html --help`), e.g. "ger" for German
+# umlauts. Empty leaves it to vhs-teletext, which assumes English.
+#teletext_language = ""
 # Notes.txt "Extra parameters" prompt default
 #extra_decode_params = "--ire0_adjust"
 # Notes.txt version fallback when not detectable from decode artifacts
