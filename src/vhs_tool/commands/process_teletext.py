@@ -14,7 +14,10 @@ Output files (default: ./export/<base>.teletext/):
   <base>.squash.t42   Error-reduced page stream (frequency analysis over the
                       duplicates of each subpage) — this is the readable one
   pages.txt           Index of the pages found in the stream, with counts
-  html/               Rendered pages, browsable offline
+  html/               Rendered pages, browsable offline. Teletext encodes
+                      accented letters as a national subset of the character
+                      set, which the stream rarely declares — pass --language
+                      (e.g. 'ger') to render umlauts instead of ¼ ‖ ¾ ÷
 
 The output folder is what goes into an archive.org item as `teletext/`: copy it
 there, then (re-)run `vhs-tool upload` so it lands in archive.sha256.
@@ -145,9 +148,20 @@ def build_pages_command(teletext_bin: str, source: Path) -> list[str]:
     return [teletext_bin, "list", "--count", str(source)]
 
 
-def build_html_command(teletext_bin: str, source: Path, outdir: Path) -> list[str]:
-    """Assemble `teletext html` — render the stream into browsable pages."""
-    return [teletext_bin, "html", str(outdir), str(source)]
+def build_html_command(
+    teletext_bin: str, source: Path, outdir: Path, language: str = ""
+) -> list[str]:
+    """Assemble `teletext html` — render the stream into browsable pages.
+
+    `language` selects the G0 national subset the text is rendered with. The
+    value is passed through unvalidated: which subsets exist is up to the
+    installed vhs-teletext, and it rejects an unknown one with a message that
+    lists the ones it has.
+    """
+    cmd = [teletext_bin, "html"]
+    if language:
+        cmd += ["--localcodepage", language]
+    return cmd + [str(outdir), str(source)]
 
 
 # =============================================================================
@@ -209,6 +223,16 @@ def add_parser(subparsers) -> None:
     group.add_argument("--threads", type=int, help="Worker threads (default: all cores)")
     group.add_argument(
         "--limit", type=int, metavar="N", help="Stop after N VBI lines (quick trial run)"
+    )
+
+    group = parser.add_argument_group("rendering settings")
+    group.add_argument(
+        "--language",
+        default=_CFG.defaults.teletext_language,
+        metavar="SUBSET",
+        help="G0 national subset the html pages are rendered with, e.g. 'ger' for "
+        "German umlauts (default: "
+        f"{_CFG.defaults.teletext_language or 'unset — vhs-teletext assumes English'})",
     )
 
     group = parser.add_argument_group("squash settings")
@@ -297,6 +321,7 @@ def cmd_process_teletext(args: argparse.Namespace) -> int:
         f"Deconvolve:  card={args.card}  tape-format={args.tape_format}  "
         f"keep-empty={args.keep_empty}"
     )
+    log(f"Language:    {args.language or 'unset (vhs-teletext assumes English)'}")
     print(file=sys.stderr)
 
     start_ts = time.time()
@@ -375,7 +400,7 @@ def cmd_process_teletext(args: argparse.Namespace) -> int:
         log("HTML: no teletext in this recording — skipping")
     else:
         log("========== html ==========")
-        cmd = build_html_command(teletext_bin, source, html_dir)
+        cmd = build_html_command(teletext_bin, source, html_dir, args.language)
         log(f"$ {shlex.join(cmd)}")
         if not args.dry_run:
             html_dir.mkdir(parents=True, exist_ok=True)

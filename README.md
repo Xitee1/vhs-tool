@@ -161,12 +161,19 @@ vhs-tool process-teletext --limit 20000 ./decoded/<name>
 
 # Re-render only the reports from an existing packet stream:
 vhs-tool process-teletext --only pages,html --overwrite ./decoded/<name>
+
+# Render the pages with the German character set (ä ö ü ß instead of ¼ ‖ ¾ ÷):
+vhs-tool process-teletext --language ger ./decoded/<name>
 ```
 
 Deconvolves the teletext broadcast in the VBI lines of the luma TBC
 (PAL/SECAM only) via [vhs-teletext](https://github.com/ali1234/vhs-teletext),
 squashes duplicate subpages to reduce errors, and renders the result as
-browsable HTML. Steps whose output already exists are skipped unless
+browsable HTML. Teletext encodes accented letters as a national subset of the
+character set which the stream rarely declares, so `--language` (or
+`[defaults] teletext_language`) selects it — the value is whatever charset key
+the installed vhs-teletext knows, see `teletext html --help`. Steps whose
+output already exists are skipped unless
 `--overwrite` is given, so an interrupted run resumes cheaply. The output
 folder is meant to be copied into the archive.org item as `teletext/` — run
 `vhs-tool upload` afterwards so it lands in `archive.sha256`.

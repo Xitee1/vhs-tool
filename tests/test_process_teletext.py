@@ -164,3 +164,22 @@ def test_pages_and_html_commands():
         "out/html",
         "in.t42",
     ]
+
+
+def test_html_command_with_language():
+    assert pt.build_html_command("teletext", Path("in.t42"), Path("out/html"), "ger") == [
+        "teletext",
+        "html",
+        "--localcodepage",
+        "ger",
+        "out/html",
+        "in.t42",
+    ]
+
+
+def test_html_command_omits_an_empty_language():
+    # Empty means "don't pass the option": which subsets exist depends on the
+    # installed vhs-teletext, so vhs-tool must not invent a default.
+    assert "--localcodepage" not in pt.build_html_command(
+        "teletext", Path("in.t42"), Path("out/html"), ""
+    )
