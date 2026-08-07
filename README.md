@@ -9,6 +9,7 @@ step from RF capture to a publish-ready upload folder.
 | `vhs-tool audio`       | HiFi/Linear RF → decoded + aligned FLAC (48 kHz)     |
 | `vhs-tool export`      | TBC + aligned FLAC → lossless FFV1 + Opus audio      |
 | `vhs-tool encode`      | FFV1 + Opus → [VapourSynth] → x265 → final MKV       |
+| `vhs-tool process-teletext` | TBC VBI lines → teletext packet stream (t42) + HTML |
 | `vhs-tool upload`      | Final MKV → Internet Archive / YouTube upload folder |
 | `vhs-tool rf-resample` | Downsample RF captures for archival (40 → 20 MSPS)   |
 | `vhs-tool rf-trim`     | Trim noise from the end of synchronized RF captures  |
@@ -24,6 +25,8 @@ step from RF capture to a publish-ready upload folder.
   - `export`: ffmpeg, ffprobe, tbc-video-export AppImage, tbc-tools AppImage
   - `encode`: ffmpeg, ffprobe, mkvmerge, x265, optionally vspipe/vspreview
     (VapourSynth) and mediainfo
+  - `process-teletext`: teletext ([vhs-teletext](https://github.com/ali1234/vhs-teletext),
+    default: `./tools/vhs-decode/.venv/bin/teletext`, falls back to PATH)
   - `upload`: ffmpeg, ffprobe, mkvmerge, mkvextract, optionally rsync
     (copy progress); sox + flac when the video RF still needs resampling
   - `rf-resample`: sox (with FLAC support), flac (≥1.4)
@@ -85,6 +88,7 @@ vhs-tool decode --help
 vhs-tool audio --help
 vhs-tool export --help
 vhs-tool encode --help
+vhs-tool process-teletext --help
 vhs-tool upload --help
 vhs-tool rf-resample --help
 ```
@@ -145,6 +149,27 @@ vhs-tool encode -p anime --vpy ./tools/vapoursynth_vhs.vpy \
     --cut-begin 00:42:00 --cut-end 00:45:30 \
     ./export/<name>
 ```
+
+### Teletext (optional, needs only the TBC)
+
+```bash
+vhs-tool process-teletext ./decoded/VHS_PAL_Tape__Name-2026-05-03_18_14_58_02_00
+# → export/<name>.teletext/{<name>.t42,<name>.squash.t42,pages.txt,html/}
+
+# Quick trial on the first 20000 VBI lines before committing to a full run:
+vhs-tool process-teletext --limit 20000 ./decoded/<name>
+
+# Re-render only the reports from an existing packet stream:
+vhs-tool process-teletext --only pages,html --overwrite ./decoded/<name>
+```
+
+Deconvolves the teletext broadcast in the VBI lines of the luma TBC
+(PAL/SECAM only) via [vhs-teletext](https://github.com/ali1234/vhs-teletext),
+squashes duplicate subpages to reduce errors, and renders the result as
+browsable HTML. Steps whose output already exists are skipped unless
+`--overwrite` is given, so an interrupted run resumes cheaply. The output
+folder is meant to be copied into the archive.org item as `teletext/` — run
+`vhs-tool upload` afterwards so it lands in `archive.sha256`.
 
 ### Upload (step 5)
 

@@ -48,6 +48,7 @@ class Binaries:
     tbc_video_export: str = "./tools/tbc-video-export.AppImage"
     tbc_tools: str = "./tools/tbc-tools/tbc-tools-x86_64.AppImage"
     tbc_export_config: str = "./tools/tbc-video-export.json"
+    teletext: str = "./tools/vhs-decode/.venv/bin/teletext"  # ali1234/vhs-teletext
 
 
 @dataclass(frozen=True)

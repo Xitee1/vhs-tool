@@ -25,6 +25,8 @@
 #tbc_video_export = "./tools/tbc-video-export.AppImage"
 #tbc_tools = "./tools/tbc-tools/tbc-tools-x86_64.AppImage"
 #tbc_export_config = "./tools/tbc-video-export.json"
+# ali1234/vhs-teletext — used by `vhs-tool process-teletext`
+#teletext = "./tools/vhs-decode/.venv/bin/teletext"
 
 [defaults]
 # Audio language code for muxing

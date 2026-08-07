@@ -28,6 +28,9 @@ src/vhs_tool/
         audio.py    HiFi/Linear RF → decoded + aligned FLAC
         export.py   TBC + FLAC → FFV1 + Opus
         encode.py   FFV1 + Opus → [VapourSynth] → x265 → MKV
+        process_teletext.py  TBC VBI lines → t42 packet stream + HTML
+                             (vhs-teletext wrapper; output feeds the IA item's
+                             teletext/ folder)
         upload.py   final MKV → IA/YouTube upload folder (interactive)
         rf_resample.py  downsample RF captures, used by upload
         set_props.py    patch metadata on an existing MKV in place (mkvpropedit; PATCH)
