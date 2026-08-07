@@ -410,9 +410,4 @@ def cmd_process_teletext(args: argparse.Namespace) -> int:
             log(f"  {line}")
         if len(lines) > PAGES_PREVIEW_LINES:
             log(f"  ... {len(lines) - PAGES_PREVIEW_LINES} more lines in {pages_txt.name}")
-        log("")
-
-    log("Next: copy the folder into the archive.org item as teletext/, e.g.")
-    log(f"  cp -r {outdir} {_CFG.paths.upload}/{base}_IA/teletext")
-    log("then (re-)run `vhs-tool upload` so it lands in archive.sha256.")
     return 0
