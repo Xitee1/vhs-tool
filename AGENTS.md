@@ -32,6 +32,7 @@ src/vhs_tool/
                              (vhs-teletext wrapper; output feeds the IA item's
                              teletext/ folder)
         upload.py   final MKV → IA/YouTube upload folder (interactive)
+        rf_compress.py  raw RF captures → FLAC (MD5-verified, deletes the raw)
         rf_resample.py  downsample RF captures, used by upload
         set_props.py    patch metadata on an existing MKV in place (mkvpropedit; PATCH)
         trim.py         trim noise from the end of synced RF captures
