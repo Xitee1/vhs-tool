@@ -18,6 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
         encode,
         export,
         process_teletext,
+        rf_compress,
         rf_resample,
         set_props,
         trim,
@@ -37,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     encode.add_parser(subparsers)
     process_teletext.add_parser(subparsers)
     upload.add_parser(subparsers)
+    rf_compress.add_parser(subparsers)
     rf_resample.add_parser(subparsers)
     trim.add_parser(subparsers)
     set_props.add_parser(subparsers)

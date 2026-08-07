@@ -11,6 +11,7 @@ step from RF capture to a publish-ready upload folder.
 | `vhs-tool encode`      | FFV1 + Opus → [VapourSynth] → x265 → final MKV       |
 | `vhs-tool process-teletext` | TBC VBI lines → teletext packet stream (t42) + HTML |
 | `vhs-tool upload`      | Final MKV → Internet Archive / YouTube upload folder |
+| `vhs-tool rf-compress` | Raw RF captures → FLAC, MD5-verified (lossless)      |
 | `vhs-tool rf-resample` | Downsample RF captures for archival (40 → 20 MSPS)   |
 | `vhs-tool rf-trim`     | Trim noise from the end of synchronized RF captures  |
 
@@ -29,6 +30,7 @@ step from RF capture to a publish-ready upload folder.
     default: `./tools/vhs-decode/.venv/bin/teletext`, falls back to PATH)
   - `upload`: ffmpeg, ffprobe, mkvmerge, mkvextract, optionally rsync
     (copy progress); sox + flac when the video RF still needs resampling
+  - `rf-compress`: flac (≥1.4; ≥1.5 for multi-threaded encoding)
   - `rf-resample`: sox (with FLAC support), flac (≥1.4)
   - `rf-trim`: sox (with FLAC support); ffprobe optional (sample-count fallback)
 
@@ -90,7 +92,9 @@ vhs-tool export --help
 vhs-tool encode --help
 vhs-tool process-teletext --help
 vhs-tool upload --help
+vhs-tool rf-compress --help
 vhs-tool rf-resample --help
+vhs-tool rf-trim --help
 ```
 
 ### Decode (step 1)
@@ -195,6 +199,33 @@ downsample, preview, YouTube encode) are skipped, text files are regenerated.
 RF capture files are searched in `./captures` and `./export_new` by default
 (override with `--capture-dir`). If the video RF is not yet downsampled, it is
 resampled in place (same as `vhs-tool rf-resample` with defaults).
+
+### RF compress (step 0)
+
+Uncompressed captures (e.g. from `local-capture.sh` without FLAC) are
+losslessly packed into FLAC before anything else touches them:
+
+```bash
+# Compress every raw file in ./captures (originals removed after verification):
+vhs-tool rf-compress ./captures
+
+# Preview, or keep the originals until you are sure:
+vhs-tool rf-compress ./captures --dry-run
+vhs-tool rf-compress ./captures --keep-raw
+
+# A single file; non-clockgen capture rate (28.6 MSPS):
+vhs-tool rf-compress ./captures/VHS_PAL_Tape_010-video.u8 --rate 28636
+```
+
+Scans the directory non-recursively for `.u8`/`.r8`/`.u16`/`.s16`/`.r16` and
+derives the sample format from the extension (`--bps`/`--sign` override it, and
+are required for any other extension). Encoding uses `flac -8
+--blocksize=65535 --lax` — level 8 is optimal for RF; levels 9+ bloat the file
+by ~42%. All cores are used when flac is ≥ 1.5.0 (`--threads`).
+
+The FLAC is decoded again and compared to the raw original **via MD5** before
+the original is deleted; a mismatch or a crash leaves the raw file untouched and
+no `.flac` behind, so re-runs are safe (existing `.flac` siblings are skipped).
 
 ### RF resample (standalone)
 
