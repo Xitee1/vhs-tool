@@ -1,7 +1,8 @@
 import pytest
 
 from vhs_tool.cli import build_parser
-from vhs_tool.commands.audio import derive_base, parse_peak_gain, validate_hifi
+from vhs_tool.commands import audio
+from vhs_tool.commands.audio import derive_base, parse_peak_gain, process_hifi, validate_hifi
 from vhs_tool.common import ToolError
 
 
@@ -31,6 +32,43 @@ def test_validate_hifi():
     assert validate_hifi(5.0, 5.0) is True  # at threshold = valid (bash: fails only if <)
     assert validate_hifi(1.5, 5.0) is False
     assert validate_hifi(None, 5.0) is True  # unparsable → pass through unvalidated
+
+
+def _noise_decode_setup(tmp_path, monkeypatch, extra_args=()):
+    """process_hifi() over a tape whose decode reports a noise-only peak gain."""
+    (tmp_path / "Tape-hifi.flac").touch()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    decoded = out_dir / "Tape-hifi.flac"
+
+    def fake_decode(args, hifi_decode_bin, out):
+        out.touch()  # hifi-decode always writes its output, signal or not
+        return 1.5
+
+    monkeypatch.setattr(audio, "run_hifi_decode", fake_decode)
+    args = build_parser().parse_args(
+        ["audio", str(tmp_path / "Tape"), "--output", str(out_dir), *extra_args]
+    )
+    args.hifi_file = str(tmp_path / "Tape-hifi.flac")
+    paths = {
+        "tbc_json": out_dir / "Tape-video.tbc.json",
+        "hifi_decoded": decoded,
+        "hifi_aligned": out_dir / "Tape-hifi.aligned.flac",
+    }
+    return process_hifi(args, "hifi-decode", paths), decoded
+
+
+def test_empty_hifi_is_kept_and_warns(tmp_path, monkeypatch):
+    warning, decoded = _noise_decode_setup(tmp_path, monkeypatch)
+    assert decoded.is_file()  # noise-only decode kept for inspection
+    assert "No HiFi signal detected" in warning
+    assert "--delete-empty-tracks" in warning
+
+
+def test_empty_hifi_deleted_with_flag(tmp_path, monkeypatch):
+    warning, decoded = _noise_decode_setup(tmp_path, monkeypatch, ["--delete-empty-tracks"])
+    assert not decoded.exists()
+    assert "deleted" in warning
 
 
 def test_hifi_output_overwrite_guard(tmp_path):

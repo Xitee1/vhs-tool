@@ -125,6 +125,9 @@ validated against the hifi-decode peak gain (noise-only tapes are detected and
 skipped); the decoded intermediate is deleted after alignment unless
 `--keep-intermediate` is given.
 
+A noise-only HiFi decode is kept on disk and reported as a warning at the end
+of the run — pass `--delete-empty-tracks` to have it removed instead.
+
 ### Export (step 3)
 
 ```bash
