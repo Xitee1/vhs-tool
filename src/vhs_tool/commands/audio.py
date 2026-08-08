@@ -18,6 +18,10 @@ Input: a single <base> path (e.g. "./captures/VHS_PAL_Tape_010"). Resolves:
 Everything downstream of `hifi-decode` runs through a pipe chain
 (ffmpeg | aaa stream-align | ffmpeg) — zero .raw/.pcm files on disk.
 
+Tapes without a HiFi track are detected from the hifi-decode peak gain: their
+decode is kept on disk and reported as a warning at the end of the run, unless
+--delete-empty-tracks asks for it to be removed.
+
 Based on https://github.com/oyvindln/vhs-decode/wiki/Auto-Audio-Align
 """
 
@@ -176,7 +180,14 @@ def stream_align(
             raise ToolError(f"{name} exited with code {returncode}")
 
 
-def process_hifi(args: argparse.Namespace, hifi_decode_bin: str, paths: dict[str, Path]) -> None:
+def process_hifi(
+    args: argparse.Namespace, hifi_decode_bin: str, paths: dict[str, Path]
+) -> str | None:
+    """Decode + align HiFi.
+
+    Returns a warning message when the tape carries no HiFi signal (printed
+    again at the end of the run), else None.
+    """
     log("========== HiFi ==========")
     hifi_decoded = paths["hifi_decoded"]
     peak_gain: float | None = None
@@ -194,10 +205,18 @@ def process_hifi(args: argparse.Namespace, hifi_decode_bin: str, paths: dict[str
         log("Validating HiFi signal...")
         if not validate_hifi(peak_gain, float(HIFI_PEAK_GAIN_MIN)):
             log("Skipping HiFi alignment — no signal on this tape")
-            if not args.skip_hifi_decode and hifi_decoded.is_file():
+            gain = f"peak gain {peak_gain}%" if peak_gain is not None else "no peak gain reported"
+            if args.skip_hifi_decode or not hifi_decoded.is_file():
+                return f"No HiFi signal detected ({gain}) — nothing was aligned."
+            if args.delete_empty_tracks:
                 log(f"Removing noise-only decoded HiFi: {hifi_decoded}")
                 hifi_decoded.unlink()
-            return
+                return f"No HiFi signal detected ({gain}) — decoded HiFi deleted."
+            log(f"Keeping noise-only decoded HiFi: {hifi_decoded}")
+            return (
+                f"No HiFi signal detected ({gain}) — kept {hifi_decoded} for inspection.\n"
+                "  Pass --delete-empty-tracks to remove noise-only decodes automatically."
+            )
 
     # 3) Piped alignment: ffmpeg → aaa stream-align → ffmpeg
     hifi_aligned = paths["hifi_aligned"]
@@ -217,6 +236,7 @@ def process_hifi(args: argparse.Namespace, hifi_decode_bin: str, paths: dict[str
 
     log(f"HiFi done → {hifi_aligned}")
     print(file=sys.stderr)
+    return None
 
 
 def process_linear(args: argparse.Namespace, paths: dict[str, Path]) -> None:
@@ -291,6 +311,12 @@ def add_parser(subparsers) -> None:
         "--keep-intermediate",
         action="store_true",
         help="Keep decoded HiFi FLAC after alignment (default: delete)",
+    )
+    parser.add_argument(
+        "--delete-empty-tracks",
+        action="store_true",
+        help="Delete the decoded HiFi FLAC when no HiFi signal was detected "
+        "(default: keep it and warn at the end)",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
     parser.add_argument("-v", "--verbose", action="store_true", help="Echo every executed command")
@@ -383,9 +409,12 @@ def cmd_audio(args: argparse.Namespace) -> int:
 
     # -- Run ------------------------------------------------------------------
     start_ts = time.time()
+    hifi_warning = None
     if not args.skip_hifi:
-        process_hifi(args, hifi_decode_bin, paths)
+        hifi_warning = process_hifi(args, hifi_decode_bin, paths)
     if not args.skip_linear:
         process_linear(args, paths)
     log(f"All done in {int(time.time() - start_ts)}s")
+    if hifi_warning:
+        log(f"WARNING: {hifi_warning}")
     return 0
