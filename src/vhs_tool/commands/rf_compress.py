@@ -16,7 +16,23 @@ after that verification is the raw file removed (`--keep-raw` keeps it).
 Files that already have a `.flac` sibling are skipped, and the FLAC only takes
 its final name once it is complete and verified — so re-runs are safe.
 
-Requires: flac (≥1.4; ≥1.5 for multi-threaded encoding)
+Existing `.flac` files are recompressed to the target level when that pays off.
+FLAC does not record its compression level, so the decision is made by
+measurement: a probe re-encodes the first `--probe-size` MiB of the file and
+projects the size gain; only when it reaches `--min-gain` percent is the file
+fully re-encoded (decode→encode pipe, no intermediate raw). Verification uses
+the STREAMINFO MD5 (computed by the encoder over the unencoded samples): the
+decode side checks it for the source, the new file must carry the same MD5,
+and `flac -t` proves the file on disk decodes cleanly — only then is the
+original replaced. The verified level is stored as a `VHS_TOOL_FLAC_LEVEL`
+Vorbis comment so later runs skip the file without probing. Recompression also
+repairs the total-sample count in STREAMINFO (0 in piped captures).
+
+Before anything is touched, the command prints a plan — files already
+verified, files to compress, files to probe — and asks for confirmation
+(`--yes` skips the prompt).
+
+Requires: flac + metaflac (≥1.4; ≥1.5 for multi-threaded encoding)
 
 Ref: the wiki recommends the FLAC CLI (not FFmpeg) for RF data:
   https://github.com/oyvindln/vhs-decode/wiki/RF-Compression-&-Decompression-Guide
@@ -29,16 +45,18 @@ See: https://github.com/harrypm/Scripts/issues/2
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import os
 import re
 import shlex
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import NamedTuple
 
-from ..common import ToolError, check_deps, log, run
+from ..common import ToolError, check_deps, confirm, log, run
 
 # -- Defaults ------------------------------------------------------------------
 FLAC_LEVEL = 8
@@ -48,6 +66,11 @@ CHANNELS = 1
 ENDIAN = "little"
 MAX_THREADS = 128  # flac's own upper limit for --threads
 CHUNK = 1 << 20  # MD5 read size
+
+# -- Recompression defaults ----------------------------------------------------
+LEVEL_TAG = "VHS_TOOL_FLAC_LEVEL"  # Vorbis comment marking a verified level
+PROBE_MIB = 1024  # probe window read from the start of the compressed file
+MIN_GAIN_PCT = 0.5  # recompress only when the probe projects at least this gain
 
 # Raw capture extensions in scan order → (bits per sample, sign).
 RAW_FORMATS: dict[str, tuple[int, str]] = {
@@ -59,6 +82,8 @@ RAW_FORMATS: dict[str, tuple[int, str]] = {
 }
 
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
+_ANA_FRAME_RE = re.compile(r"^frame=\d+\toffset=(\d+)\tbits=(\d+)\tblocksize=(\d+)\t")
+_ANA_ORDER_RE = re.compile(r"\ttype=(?:LPC|FIXED)\torder=(\d+)")
 
 
 class FlacVersion(NamedTuple):
@@ -78,6 +103,53 @@ class CompressResult(NamedTuple):
     status: str  # "compressed" | "skipped" | "error"
     raw_size: int = 0
     flac_size: int = 0
+
+
+class FlacInfo(NamedTuple):
+    """STREAMINFO fields of an existing FLAC (via metaflac)."""
+
+    md5: str  # hex digest of the unencoded samples; all zeros if the encoder couldn't seek back
+    min_blocksize: int
+    max_blocksize: int
+    sample_rate: int
+    channels: int
+    bps: int
+
+    @property
+    def has_md5(self) -> bool:
+        return set(self.md5) != {"0"}
+
+
+class AnaFrame(NamedTuple):
+    """One frame line of `flac --analyze` output."""
+
+    offset: int  # byte offset of the frame in the file
+    bits: int  # compressed size of the frame in bits
+    blocksize: int  # samples per channel in the frame
+
+
+class ProbeResult(NamedTuple):
+    """Outcome of a trial re-encode of the file's first frames."""
+
+    orig_bytes: int  # compressed bytes those frames occupy in the original
+    probe_bytes: int  # compressed bytes of the trial re-encode (metadata excluded)
+    samples: int
+    frames: int
+    max_order: int  # highest predictor order seen (>12 ⇒ --lax high-order encode)
+
+    @property
+    def gain_pct(self) -> float:
+        if self.orig_bytes <= 0:
+            return 0.0
+        return (1 - self.probe_bytes / self.orig_bytes) * 100
+
+
+class Plan(NamedTuple):
+    """What a run will do — shown to the user before anything is touched."""
+
+    verified: list[Path]  # FLACs already tagged for the target level, left alone
+    raw_todo: list[Path]  # raw captures to compress
+    flac_todo: list[tuple[Path, int | None]]  # FLACs to probe/recompress, with their tag
 
 
 # =============================================================================
@@ -128,10 +200,13 @@ def resolve_threads(requested: int | None, version: FlacVersion) -> int:
 
 
 def flac_encode_cmd(
-    file: Path, out: Path, *, bps: int, sign: str, rate: int, channels: int,
+    file: Path | str, out: Path | None, *, bps: int, sign: str, rate: int, channels: int,
     blocksize: int, level: int, threads: int,
 ) -> list[str]:  # fmt: skip
-    """flac command line encoding one raw capture with RF-optimal settings."""
+    """flac command line encoding one raw capture with RF-optimal settings.
+
+    `file` may be "-" for stdin; `out=None` encodes to stdout.
+    """
     cmd = ["flac", "--silent", f"-{level}"]
     if threads:
         cmd.append(f"--threads={threads}")
@@ -139,9 +214,90 @@ def flac_encode_cmd(
         f"--blocksize={blocksize}", "--lax",
         f"--sample-rate={rate}", f"--channels={channels}", f"--bps={bps}",
         f"--sign={sign}", f"--endian={ENDIAN}",
-        "-f", str(file), "-o", str(out),
+        "-f",
     ]  # fmt: skip
+    if out is None:
+        cmd += ["--stdout", str(file)]
+    else:
+        cmd += [str(file), "-o", str(out)]
     return cmd
+
+
+def flac_decode_raw_cmd(file: Path) -> list[str]:
+    """flac command decoding a FLAC to canonical raw samples (signed/little) on stdout.
+
+    Decoding also verifies each frame's CRC and — at end of stream — the
+    STREAMINFO MD5, so a nonzero exit proves the source did not decode to
+    what its header claims.
+    """
+    return [
+        "flac", "--silent", "-d", "--force-raw-format",
+        "--sign=signed", f"--endian={ENDIAN}", "--stdout", str(file),
+    ]  # fmt: skip
+
+
+def parse_flac_info(output: str) -> FlacInfo:
+    """Parse the six lines of `metaflac --show-md5sum --show-min-blocksize ...`."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if len(lines) != 6 or not all(line.isdigit() for line in lines[1:]):
+        raise ToolError(f"unexpected metaflac output: {output!r}")
+    md5, *nums = lines
+    return FlacInfo(md5.lower(), *(int(n) for n in nums))
+
+
+def parse_level_tag(output: str) -> int | None:
+    """Level from `metaflac --show-tag=...` output (``NAME=8``), or None."""
+    for line in output.splitlines():
+        name, sep, value = line.partition("=")
+        if sep and name.strip().upper() == LEVEL_TAG and value.strip().isdigit():
+            return int(value.strip())
+    return None
+
+
+def parse_ana_frame(line: str) -> AnaFrame | None:
+    """Frame accounting from one `flac --analyze` line, or None for other lines."""
+    match = _ANA_FRAME_RE.match(line)
+    if not match:
+        return None
+    return AnaFrame(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def parse_ana_order(line: str) -> int | None:
+    """Predictor order from a `flac --analyze` subframe line, or None."""
+    match = _ANA_ORDER_RE.search(line)
+    return int(match.group(1)) if match else None
+
+
+def flac_metadata_length(head: bytes) -> int:
+    """Byte length of the metadata section at the start of a FLAC stream."""
+    if head[:4] != b"fLaC":
+        raise ToolError("not a FLAC stream")
+    pos = 4
+    while True:
+        if pos + 4 > len(head):
+            raise ToolError("FLAC metadata longer than the buffered stream head")
+        header = head[pos]
+        pos += 4 + int.from_bytes(head[pos + 1 : pos + 4], "big")
+        if header & 0x80:  # last-metadata-block flag
+            return pos
+
+
+def build_plan(
+    raw_files: list[Path],
+    flac_files: list[Path],
+    tags: dict[Path, int | None],
+    level: int,
+    force: bool,
+) -> Plan:
+    """Partition the scanned files by what will happen to them.
+
+    Without `force`, FLACs already tagged for the target level are set aside
+    as verified; everything else stays on the worklist with its tag (None =
+    level unknown, decided by the probe).
+    """
+    verified = [] if force else [f for f in flac_files if tags.get(f) == level]
+    flac_todo = [(f, tags.get(f)) for f in flac_files if force or tags.get(f) != level]
+    return Plan(verified, list(raw_files), flac_todo)
 
 
 def find_raw_files(directory: Path) -> list[Path]:
@@ -150,6 +306,11 @@ def find_raw_files(directory: Path) -> list[Path]:
     for ext in RAW_FORMATS:
         files.extend(sorted(p for p in directory.glob(f"*.{ext}") if p.is_file()))
     return files
+
+
+def find_flac_files(directory: Path) -> list[Path]:
+    """FLAC files directly in `directory` (no recursion; `.flac.part` never matches)."""
+    return sorted(p for p in directory.glob("*.flac") if p.is_file())
 
 
 # =============================================================================
@@ -190,6 +351,147 @@ def md5_flac_raw(file: Path, *, sign: str) -> str:
     if returncode != 0:
         raise ToolError(f"flac (decode) exited with code {returncode}")
     return digest.hexdigest()
+
+
+# =============================================================================
+# FLAC metadata (metaflac)
+# =============================================================================
+
+
+def read_flac_info(file: Path) -> FlacInfo:
+    """STREAMINFO of an existing FLAC."""
+    out = run(
+        ["metaflac", "--show-md5sum", "--show-min-blocksize", "--show-max-blocksize",
+         "--show-sample-rate", "--show-channels", "--show-bps", file],
+        capture=True,
+    ).stdout  # fmt: skip
+    return parse_flac_info(out)
+
+
+def read_level_tag(file: Path) -> int | None:
+    """Verified level stored in the file's Vorbis comment, or None."""
+    out = run(["metaflac", f"--show-tag={LEVEL_TAG}", file], capture=True).stdout
+    return parse_level_tag(out)
+
+
+def has_padding(file: Path) -> bool:
+    out = run(["metaflac", "--list", "--block-type=PADDING", file], capture=True).stdout
+    return bool(out.strip())
+
+
+def set_level_tag(file: Path, level: int) -> bool:
+    """Store the verified level as a Vorbis comment; best-effort, never raises.
+
+    Requires an existing PADDING block: without one metaflac would rewrite the
+    entire file just to fit the tag — not worth it on captures of hundreds of
+    GB. An untagged file merely gets probed again on the next run.
+    """
+    try:
+        if not has_padding(file):
+            log("    → no PADDING block — not tagging (metaflac would rewrite the whole file)")
+            return False
+        run(["metaflac", f"--remove-tag={LEVEL_TAG}", f"--set-tag={LEVEL_TAG}={level}", file])
+        return True
+    except ToolError as exc:
+        log(f"    → tagging failed ({exc})")
+        return False
+
+
+# =============================================================================
+# Recompression probe
+# =============================================================================
+
+
+class _StreamCounter(threading.Thread):
+    """Drains a pipe, counting its bytes and keeping the head for metadata parsing."""
+
+    HEAD = 65536
+
+    def __init__(self, stream):
+        super().__init__(daemon=True)
+        self._stream = stream
+        self.total = 0
+        self.head = b""
+
+    def run(self) -> None:
+        while chunk := self._stream.read(CHUNK):
+            if len(self.head) < self.HEAD:
+                self.head += chunk[: self.HEAD - len(self.head)]
+            self.total += len(chunk)
+
+
+def probe_flac(
+    file: Path, *, info: FlacInfo, level: int, blocksize: int, threads: int, probe_bytes: int
+) -> ProbeResult:
+    """Measure on the file's first `probe_bytes` how much a re-encode at `level` saves.
+
+    FLAC does not store its compression level, so the question "is this file
+    already optimal?" is answered by measurement: pass 1 walks the frames
+    within the window via `flac --analyze` (their compressed sizes, blocksizes
+    and predictor orders); pass 2 decodes exactly those samples and re-encodes
+    them with the target settings, counting the output bytes. Both passes stop
+    at the window — the bulk of the file is never read. `--until`/`--skip`
+    are no help here: piped captures have a total-sample count of 0.
+    """
+    # -- Pass 1: frame accounting of the original encode -----------------------
+    frames = samples = bits = max_order = 0
+    ana_cmd = ["flac", "--silent", "-a", "--stdout", str(file)]
+    proc = subprocess.Popen(
+        ana_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="replace"
+    )
+    try:
+        for line in proc.stdout:
+            frame = parse_ana_frame(line)
+            if frame is not None:
+                if frame.offset > probe_bytes:
+                    break
+                frames += 1
+                samples += frame.blocksize
+                bits += frame.bits
+                continue
+            order = parse_ana_order(line)
+            if order is not None:
+                max_order = max(max_order, order)
+    finally:
+        proc.terminate()
+        proc.stdout.close()
+        proc.wait()
+    if frames == 0:
+        raise ToolError("flac --analyze produced no frames")
+
+    # -- Pass 2: trial re-encode of exactly those samples -----------------------
+    enc_cmd = flac_encode_cmd(
+        "-", None, bps=info.bps, sign="signed", rate=info.sample_rate,
+        channels=info.channels, blocksize=blocksize, level=level, threads=threads,
+    )  # fmt: skip
+    dec = subprocess.Popen(
+        flac_decode_raw_cmd(file), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+    )
+    enc = subprocess.Popen(
+        enc_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+    )
+    counter = _StreamCounter(enc.stdout)
+    counter.start()
+    try:
+        remaining = samples * info.channels * (info.bps // 8)
+        while remaining > 0:
+            chunk = dec.stdout.read(min(CHUNK, remaining))
+            if not chunk:
+                break
+            enc.stdin.write(chunk)
+            remaining -= len(chunk)
+    finally:
+        with contextlib.suppress(OSError):
+            enc.stdin.close()
+        dec.terminate()
+        dec.stdout.close()
+        dec.wait()
+        counter.join()
+        returncode = enc.wait()
+    if returncode != 0:
+        raise ToolError(f"probe encode exited with code {returncode}")
+    probe_size = counter.total - flac_metadata_length(counter.head)
+    return ProbeResult(bits // 8, probe_size, samples, frames, max_order)
 
 
 # =============================================================================
@@ -292,6 +594,7 @@ def compress_file(
     log("    ✓ MD5 verified")
 
     # -- 3. Finalize -----------------------------------------------------------
+    set_level_tag(part, flac_level)  # lets later recompress runs skip it without probing
     part.replace(out)
     if keep_raw:
         log("    → keeping raw file (--keep-raw)")
@@ -299,6 +602,170 @@ def compress_file(
         file.unlink()
         log("    → raw file removed")
     return CompressResult("compressed", raw_size, flac_size)
+
+
+# =============================================================================
+# Recompression (existing FLACs)
+# =============================================================================
+
+
+def transcode(
+    file: Path, part: Path, *, info: FlacInfo, level: int, blocksize: int,
+    threads: int, verbose: bool,
+) -> None:  # fmt: skip
+    """Re-encode `file` into `part` via a decode→encode pipe (no intermediate raw).
+
+    The decode side verifies the source (frame CRCs + STREAMINFO MD5) as a side
+    effect and fails the pipe on any mismatch.
+    """
+    dec_cmd = flac_decode_raw_cmd(file)
+    enc_cmd = flac_encode_cmd(
+        "-", part, bps=info.bps, sign="signed", rate=info.sample_rate,
+        channels=info.channels, blocksize=blocksize, level=level, threads=threads,
+    )  # fmt: skip
+    if verbose:
+        print(f"  $ {shlex.join(dec_cmd)} | {shlex.join(enc_cmd)}", file=sys.stderr)
+    dec = subprocess.Popen(dec_cmd, stdout=subprocess.PIPE)
+    try:
+        enc = subprocess.Popen(enc_cmd, stdin=dec.stdout)
+    except BaseException:
+        dec.kill()
+        raise
+    finally:
+        dec.stdout.close()
+    enc_rc = enc.wait()
+    dec_rc = dec.wait()
+    if dec_rc != 0 or enc_rc != 0:
+        raise ToolError(f"flac transcode failed (decode rc={dec_rc}, encode rc={enc_rc})")
+
+
+def recompress_file(
+    file: Path,
+    *,
+    flac_level: int = FLAC_LEVEL,
+    blocksize: int = BLOCKSIZE,
+    threads: int = 0,
+    min_gain_pct: float = MIN_GAIN_PCT,
+    probe_bytes: int = PROBE_MIB * 1048576,
+    force: bool = False,
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> CompressResult:
+    """Re-encode an existing FLAC at `flac_level` when a probe projects enough gain.
+
+    The `VHS_TOOL_FLAC_LEVEL` tag marks a file as verified for a level — either
+    actually encoded at it, or measured to gain less than the threshold from a
+    re-encode. Tagged files are skipped instantly; untagged files are probed
+    (see probe_flac) and only fully re-encoded when the projected gain reaches
+    `min_gain_pct` percent. `force` recompresses unconditionally.
+
+    Verification chain before the original is replaced: the decode side of the
+    transcode checks the source against its own STREAMINFO MD5, the new file
+    must carry the identical MD5, and `flac -t` proves that what landed on disk
+    decodes cleanly to exactly those samples.
+    """
+    log(f"── {file.name}")
+    orig_size = file.stat().st_size
+
+    try:
+        info = read_flac_info(file)
+        tag = read_level_tag(file)
+    except ToolError as exc:
+        log(f"    ✗ cannot read FLAC metadata ({exc}), skipping")
+        return CompressResult("error")
+    log(
+        f"    → FLAC size: {human_bytes(orig_size)} "
+        f"({info.bps}-bit, {info.channels}ch, {info.sample_rate} Hz)"
+    )
+
+    if tag == flac_level and not force:
+        log(f"    → already verified for level {flac_level} ({LEVEL_TAG} tag), skipping")
+        return CompressResult("skipped")
+
+    if not force:
+        try:
+            probe = probe_flac(
+                file, info=info, level=flac_level, blocksize=blocksize,
+                threads=threads, probe_bytes=probe_bytes,
+            )  # fmt: skip
+        except ToolError as exc:
+            log(f"    ✗ probe failed ({exc}), skipping")
+            return CompressResult("error")
+        log(
+            f"    → probe: {probe.frames} frames ({human_bytes(probe.orig_bytes)}), "
+            f"max predictor order {probe.max_order}, projected gain {probe.gain_pct:.2f}%"
+        )
+        if probe.gain_pct < min_gain_pct:
+            if dry_run:
+                log(f"    → [dry run] below {min_gain_pct}% — would tag as verified and keep")
+                return CompressResult("skipped")
+            log(f"    → below {min_gain_pct}% — keeping file, tagging as verified")
+            set_level_tag(file, flac_level)
+            return CompressResult("skipped")
+
+    if dry_run:
+        log(f"    → [dry run] would recompress at level {flac_level}")
+        return CompressResult("compressed")
+
+    part = file.with_name(file.name + ".part")
+    part.unlink(missing_ok=True)  # stale partial from a previous crash
+
+    # -- 1. Transcode old FLAC → new FLAC ---------------------------------------
+    log(
+        f"    → recompressing with flac -{flac_level}"
+        + (f" --threads={threads}" if threads else "")
+    )
+    try:
+        transcode(
+            file, part, info=info, level=flac_level, blocksize=blocksize,
+            threads=threads, verbose=verbose,
+        )  # fmt: skip
+    except ToolError as exc:
+        log(f"    ✗ {exc}, keeping original")
+        part.unlink(missing_ok=True)
+        return CompressResult("error")
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+
+    new_size = part.stat().st_size
+    ratio = new_size / orig_size * 100 if orig_size else 0.0
+    log(f"    → new size: {human_bytes(new_size)} ({ratio:.1f}% of original)")
+
+    # -- 2. Verify: same samples (STREAMINFO MD5), intact on disk (flac -t) -----
+    try:
+        if info.has_md5:
+            new_md5 = read_flac_info(part).md5
+            old_md5 = info.md5
+        else:  # source predates MD5-capable encoding — compare full decodes
+            log("    → source has no STREAMINFO MD5, comparing decoded streams ...")
+            old_md5 = md5_flac_raw(file, sign="signed")
+            new_md5 = md5_flac_raw(part, sign="signed")
+        if old_md5 != new_md5:
+            log(f"      original: {old_md5}")
+            log(f"      new:      {new_md5}")
+            raise ToolError("MD5 mismatch")
+        log("    → verifying new file with flac -t ...")
+        run(["flac", "--silent", "-t", part])
+    except ToolError as exc:
+        log(f"    ✗ {exc} — keeping original, removing new FLAC")
+        part.unlink(missing_ok=True)
+        return CompressResult("error")
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    log("    ✓ verified (STREAMINFO MD5 + flac -t)")
+
+    # -- 3. Finalize -----------------------------------------------------------
+    if new_size >= orig_size:
+        log("    → no improvement — keeping original, tagging as verified")
+        part.unlink()
+        set_level_tag(file, flac_level)
+        return CompressResult("skipped")
+    set_level_tag(part, flac_level)
+    part.replace(file)
+    log(f"    ✓ saved {human_bytes(orig_size - new_size)}")
+    return CompressResult("compressed", orig_size, new_size)
 
 
 # =============================================================================
@@ -315,7 +782,7 @@ def add_parser(subparsers) -> None:
     )
     parser.add_argument(
         "path",
-        help='Directory to scan (e.g. "./captures") or a single raw capture file',
+        help='Directory to scan (e.g. "./captures") or a single raw capture / FLAC file',
     )
     parser.add_argument(
         "-l",
@@ -357,6 +824,32 @@ def add_parser(subparsers) -> None:
         "--keep-raw", action="store_true", help="Keep the original raw file after compression"
     )
     parser.add_argument(
+        "--min-gain",
+        type=float,
+        default=MIN_GAIN_PCT,
+        metavar="PCT",
+        help="Recompress a FLAC only when the probe projects at least this size gain "
+        f"in percent (default: {MIN_GAIN_PCT})",
+    )
+    parser.add_argument(
+        "--probe-size",
+        type=int,
+        default=PROBE_MIB,
+        metavar="MIB",
+        help=f"Probe window in MiB read from the start of a FLAC (default: {PROBE_MIB})",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Recompress FLAC files unconditionally (skip the tag check and the probe)",
+    )
+    parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Start without the confirmation prompt after the plan overview",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="Print what would be done without executing"
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Echo every executed command")
@@ -369,15 +862,66 @@ def add_parser(subparsers) -> None:
 
 
 def cmd_rf_compress(args: argparse.Namespace) -> int:
-    check_deps("flac")
+    check_deps("flac", "metaflac")
 
     path = Path(args.path)
     if path.is_dir():
-        files = find_raw_files(path)
+        raw_files = find_raw_files(path)
+        flac_files = find_flac_files(path)
     elif path.is_file():
-        files = [path]
+        if path.suffix.lower() == ".flac":
+            raw_files, flac_files = [], [path]
+        else:
+            raw_files, flac_files = [path], []
     else:
         raise ToolError(f"Not a file or directory: {path}")
+
+    if not raw_files and not flac_files:
+        log(f"No capture files found in: {path}")
+        log("  (looked for: " + ", ".join(f"*.{ext}" for ext in RAW_FORMATS) + ", *.flac)")
+        return 0
+
+    if path.is_dir():
+        log(f"Found {len(raw_files)} raw and {len(flac_files)} FLAC capture file(s) in: {path}")
+
+    # -- Plan overview: nothing is touched before the confirmation --------------
+    tags: dict[Path, int | None] = {}
+    for file in flac_files:
+        try:
+            tags[file] = read_level_tag(file)
+        except ToolError:
+            tags[file] = None
+    plan = build_plan(raw_files, flac_files, tags, args.level, args.force)
+
+    if plan.verified:
+        log(
+            f"{len(plan.verified)} FLAC file(s) already verified for level {args.level} "
+            f"({LEVEL_TAG} tag)"
+        )
+    if not plan.raw_todo and not plan.flac_todo:
+        log("Nothing to do.")
+        return 0
+    log(f"To process (target: FLAC level {args.level}):")
+    for file in plan.raw_todo:
+        log(f"  · {file.name} ({human_bytes(file.stat().st_size)}) — raw, will be compressed")
+    for file, tag in plan.flac_todo:
+        size = human_bytes(file.stat().st_size)
+        if args.force:
+            what = "will be recompressed (--force)"
+        elif tag is not None:
+            what = f"verified for level {tag}, will be probed"
+        else:
+            what = "level unknown, will be probed"
+        log(f"  · {file.name} ({size}) — {what}")
+    print(file=sys.stderr)
+
+    if args.dry_run:
+        log("[DRY RUN — no files will be modified]")
+    elif not args.yes:
+        todo = len(plan.raw_todo) + len(plan.flac_todo)
+        if not confirm(f"Process {todo} file(s)?", default=True):
+            log("Aborted.")
+            return 1
 
     version = parse_flac_version(run(["flac", "--version"], capture=True, check=False).stdout)
     threads = resolve_threads(args.threads, version)
@@ -385,23 +929,11 @@ def cmd_rf_compress(args: argparse.Namespace) -> int:
         log(f"FLAC {version.text} — multi-threaded encoding with {threads} threads")
     else:
         log(f"FLAC {version.text} — single-threaded encoding")
-
-    if not files:
-        log(f"No raw capture files found in: {path}")
-        log("  (looked for: " + ", ".join(f"*.{ext}" for ext in RAW_FORMATS) + ")")
-        return 0
-
-    if path.is_dir():
-        log(f"Found {len(files)} raw capture file(s) in: {path}")
-    else:
-        log(f"Compressing a single file: {path}")
-    if args.dry_run:
-        log("[DRY RUN — no files will be modified]")
     print(file=sys.stderr)
 
-    counts = {"compressed": 0, "skipped": 0, "error": 0}
+    counts = {"compressed": 0, "skipped": len(plan.verified), "error": 0}
     total_raw = total_flac = 0
-    for file in files:
+    for file in plan.raw_todo:
         result = compress_file(
             file,
             bps=args.bps,
@@ -418,6 +950,21 @@ def cmd_rf_compress(args: argparse.Namespace) -> int:
         counts[result.status] += 1
         total_raw += result.raw_size
         total_flac += result.flac_size
+    for file, _tag in plan.flac_todo:
+        result = recompress_file(
+            file,
+            flac_level=args.level,
+            blocksize=args.blocksize,
+            threads=threads,
+            min_gain_pct=args.min_gain,
+            probe_bytes=args.probe_size * 1048576,
+            force=args.force,
+            dry_run=args.dry_run,
+            verbose=args.verbose,
+        )
+        counts[result.status] += 1
+        total_raw += result.raw_size
+        total_flac += result.flac_size
 
     print(file=sys.stderr)
     log(
@@ -425,7 +972,7 @@ def cmd_rf_compress(args: argparse.Namespace) -> int:
         f"{counts['error']} error(s)."
     )
     if total_raw > 0:
-        log(f"  Raw total:  {human_bytes(total_raw)}")
-        log(f"  FLAC total: {human_bytes(total_flac)} ({total_flac / total_raw * 100:.1f}%)")
-        log(f"  Saved:      {human_bytes(total_raw - total_flac)}")
+        log(f"  Input total:  {human_bytes(total_raw)}")
+        log(f"  Output total: {human_bytes(total_flac)} ({total_flac / total_raw * 100:.1f}%)")
+        log(f"  Saved:        {human_bytes(total_raw - total_flac)}")
     return 1 if counts["error"] else 0
