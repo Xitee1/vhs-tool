@@ -63,7 +63,7 @@ from .. import __version__
 from ..capture_server import LocalServer, ServerConnection
 from ..common import ToolError, check_deps, log, resolve_binary, run
 from ..config import get_config
-from .rf_compress import BLOCKSIZE, flac_encode_cmd, parse_flac_version, resolve_threads
+from ..flac import RF_BLOCKSIZE, flac_encode_cmd, parse_flac_version, resolve_threads
 
 _CFG = get_config()
 _CAP = _CFG.capture
@@ -161,7 +161,7 @@ def parse_start_response(data: dict) -> tuple[str, int | None, str]:
 def flac_encode_args(level: int, header_rate: int, out: Path, threads: int = 0) -> list[str]:
     """flac stdin → file, parameters exactly as in capture.sh.
 
-    Delegates to rf-compress's builder so the on-disk RF FLAC format has a
+    Delegates to the shared FLAC builder so the on-disk RF FLAC format has a
     single source of truth. `threads` > 1 inserts --threads=N right after the
     level, matching the script's $FLAC_THREAD_ARG position (needs flac >=
     1.5.0 — the caller resolves that; <= 1 adds nothing, like the script's
@@ -169,7 +169,7 @@ def flac_encode_args(level: int, header_rate: int, out: Path, threads: int = 0) 
     """
     return flac_encode_cmd(
         Path("-"), out, bps=8, sign="unsigned", rate=header_rate, channels=1,
-        blocksize=BLOCKSIZE, level=level, threads=threads if threads > 1 else 0,
+        blocksize=RF_BLOCKSIZE, level=level, threads=threads if threads > 1 else 0,
     )  # fmt: skip
 
 
