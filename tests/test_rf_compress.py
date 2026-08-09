@@ -1,31 +1,26 @@
 import hashlib
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 import vhs_tool.commands.rf_compress as rf_compress
 from vhs_tool.commands.rf_compress import (
     AnaFrame,
-    FlacInfo,
     FlacVersion,
     ProbeResult,
     compress_file,
     detect_format,
     find_flac_files,
     find_raw_files,
-    flac_encode_cmd,
-    flac_metadata_length,
     human_bytes,
     parse_ana_frame,
     parse_ana_order,
-    parse_flac_info,
     parse_flac_version,
-    parse_level_tag,
     recompress_file,
     resolve_threads,
 )
 from vhs_tool.common import ToolError
+from vhs_tool.flac import FlacInfo
 
 
 @pytest.mark.parametrize(
@@ -89,32 +84,6 @@ def test_resolve_threads_caps_at_flac_limit(monkeypatch):
     assert resolve_threads(None, FlacVersion("1.5.0", 1, 5)) == rf_compress.MAX_THREADS
 
 
-def test_flac_encode_cmd():
-    cmd = flac_encode_cmd(
-        Path("/c/tape-video.u8"),
-        Path("/c/tape-video.flac.part"),
-        bps=8, sign="unsigned", rate=40000, channels=1,
-        blocksize=65535, level=8, threads=16,
-    )  # fmt: skip
-    assert cmd == [
-        "flac", "--silent", "-8", "--threads=16",
-        "--blocksize=65535", "--lax",
-        "--sample-rate=40000", "--channels=1", "--bps=8",
-        "--sign=unsigned", "--endian=little",
-        "-f", "/c/tape-video.u8", "-o", "/c/tape-video.flac.part",
-    ]  # fmt: skip
-
-
-def test_flac_encode_cmd_without_threads():
-    cmd = flac_encode_cmd(
-        Path("in.s16"), Path("out.flac"),
-        bps=16, sign="signed", rate=40000, channels=1,
-        blocksize=65535, level=8, threads=0,
-    )  # fmt: skip
-    assert not any(c.startswith("--threads") for c in cmd)
-    assert "--bps=16" in cmd and "--sign=signed" in cmd
-
-
 def test_find_raw_files_is_not_recursive(tmp_path):
     for name in ("b-video.u8", "a-video.u8", "c-video.s16", "d.flac", "e.tbc"):
         (tmp_path / name).write_bytes(b"x")
@@ -135,74 +104,9 @@ def test_find_flac_files_skips_partials_and_subdirs(tmp_path):
     assert [p.name for p in find_flac_files(tmp_path)] == ["a-hifi.flac", "b-video.flac"]
 
 
-def test_flac_encode_cmd_stdout_variant():
-    cmd = flac_encode_cmd(
-        "-", None,
-        bps=8, sign="signed", rate=40000, channels=1,
-        blocksize=65535, level=8, threads=0,
-    )  # fmt: skip
-    assert cmd[-2:] == ["--stdout", "-"]
-    assert "-o" not in cmd
-
-
-def test_flac_encode_cmd_without_lax():
-    cmd = flac_encode_cmd(
-        "-", None,
-        bps=24, sign="signed", rate=46875, channels=2,
-        blocksize=4096, level=8, threads=0, lax=False,
-    )  # fmt: skip
-    assert "--lax" not in cmd
-    assert "--blocksize=4096" in cmd
-
-
-@pytest.mark.parametrize(
-    ("source_blocksize", "expected"),
-    [
-        (65535, (65535, True)),  # RF capture → RF settings
-        (4609, (65535, True)),  # just above the subset limit → still RF-style
-        (4608, (4096, False)),  # subset limit → normal audio settings
-        (4096, (4096, False)),
-        (1152, (4096, False)),  # linear captures
-    ],
-)
-def test_recompress_settings(source_blocksize, expected):
-    info = FlacInfo("a" * 32, source_blocksize, source_blocksize, 46875, 2, 24)
-    assert rf_compress.recompress_settings(info, 65535) == expected
-
-
 # =============================================================================
-# Recompression helpers
+# Probe helpers
 # =============================================================================
-
-
-def test_parse_flac_info():
-    info = parse_flac_info("4726149E88DEE89AA27B1424E993867C\n65535\n65535\n40000\n1\n8\n")
-    assert info == FlacInfo("4726149e88dee89aa27b1424e993867c", 65535, 65535, 40000, 1, 8)
-    assert info.has_md5
-
-
-def test_parse_flac_info_zero_md5_means_absent():
-    assert not parse_flac_info("0" * 32 + "\n4096\n4096\n40000\n1\n16\n").has_md5
-
-
-@pytest.mark.parametrize("output", ["", "garbage", "abc\n1\n2\n3\n4\nnope\n"])
-def test_parse_flac_info_rejects_unexpected_output(output):
-    with pytest.raises(ToolError):
-        parse_flac_info(output)
-
-
-@pytest.mark.parametrize(
-    ("output", "expected"),
-    [
-        ("VHS_TOOL_FLAC_LEVEL=8\n", 8),
-        ("vhs_tool_flac_level=5\n", 5),  # Vorbis comment names are case-insensitive
-        ("VHS_TOOL_FLAC_LEVEL=abc\n", None),
-        ("OTHER_TAG=8\n", None),
-        ("", None),
-    ],
-)
-def test_parse_level_tag(output, expected):
-    assert parse_level_tag(output) == expected
 
 
 def test_parse_ana_frame():
@@ -225,27 +129,6 @@ def test_parse_ana_frame():
 )
 def test_parse_ana_order(line, expected):
     assert parse_ana_order(line) == expected
-
-
-def _meta_block(block_type: int, length: int, *, last: bool) -> bytes:
-    header = bytes([block_type | (0x80 if last else 0)]) + length.to_bytes(3, "big")
-    return header + b"\x00" * length
-
-
-def test_flac_metadata_length():
-    head = b"fLaC" + _meta_block(0, 34, last=False) + _meta_block(1, 10, last=True) + b"frames..."
-    assert flac_metadata_length(head) == 4 + (4 + 34) + (4 + 10)
-
-
-def test_flac_metadata_length_rejects_non_flac():
-    with pytest.raises(ToolError):
-        flac_metadata_length(b"RIFF....")
-
-
-def test_flac_metadata_length_rejects_truncated_head():
-    head = b"fLaC" + _meta_block(0, 34, last=False)  # no terminating last-block
-    with pytest.raises(ToolError):
-        flac_metadata_length(head)
 
 
 def test_probe_gain_pct():
@@ -293,13 +176,11 @@ class _FakeFlac:
         self.decode_rc = decode_rc
         self.payload = b""
         self.commands: list[list[str]] = []
+        self.tagged: list[tuple[str, int]] = []
 
     def run(self, cmd, **kwargs):
         cmd = [str(c) for c in cmd]
         self.commands.append(cmd)
-        if cmd[0] == "metaflac":  # set_level_tag: padding query, then tag write
-            out = "  type: 1 (PADDING)\n" if "--list" in cmd else ""
-            return SimpleNamespace(stdout=out, returncode=0)
         if self.encode_fails:
             raise ToolError("flac exited with code 1")
         self.payload = Path(cmd[cmd.index("-f") + 1]).read_bytes()
@@ -341,6 +222,11 @@ def fake_flac(monkeypatch):
         fake = _FakeFlac(**kwargs)
         monkeypatch.setattr(rf_compress, "run", fake.run)
         monkeypatch.setattr(rf_compress.subprocess, "Popen", fake.popen)
+        monkeypatch.setattr(
+            rf_compress,
+            "set_level_tag",
+            lambda file, level: bool(fake.tagged.append((file.name, level))) or True,
+        )
         return fake
 
     return install
@@ -475,10 +361,8 @@ def test_md5_helpers_agree_on_identical_data(tmp_path, fake_flac):
 def test_compress_file_tags_the_new_flac(tmp_path, fake_flac):
     fake = fake_flac()
     compress_file(_raw(tmp_path))
-    tag_writes = [c for c in fake.commands if c[0] == "metaflac" and "--list" not in c]
-    assert tag_writes and f"--set-tag={rf_compress.LEVEL_TAG}=8" in tag_writes[0]
     # tagged while still a .part file, before the atomic rename
-    assert tag_writes[0][-1].endswith(".flac.part")
+    assert fake.tagged == [("tape-video.flac.part", 8)]
 
 
 # =============================================================================
@@ -671,7 +555,16 @@ def test_recompress_subset_audio_stays_subset(tmp_path, fake_recompress):
     """A linear capture (blocksize 1152) is re-encoded subset at 4096, without --lax."""
     fake = fake_recompress(source_blocksize=1152)
 
-    assert recompress_file(_flac(tmp_path)).status == "compressed"
+    assert recompress_file(_flac(tmp_path, "tape-linear.flac")).status == "compressed"
     for kwargs in (fake.probe_kwargs, fake.transcode_kwargs):
         assert kwargs["blocksize"] == rf_compress.AUDIO_BLOCKSIZE
         assert kwargs["lax"] is False
+
+
+def test_recompress_rf_source_that_lost_its_blocksize_is_repaired(tmp_path, fake_recompress):
+    """An RF file written at an audio blocksize is still recognized by its channel."""
+    fake = fake_recompress(source_blocksize=4096)
+
+    assert recompress_file(_flac(tmp_path, "tape-video.flac")).status == "compressed"
+    assert fake.transcode_kwargs["blocksize"] == 65535
+    assert fake.transcode_kwargs["lax"] is True

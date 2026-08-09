@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 from ..common import ToolError, check_deps, derive_base, log, soxi
+from ..flac import FLAC_LEVEL, RF_BLOCKSIZE, flac_encode_cmd, set_level_tag
 
 # -- Defaults ------------------------------------------------------------------
 VIDEO_RATE = 20000  # target video rate in FLAC-scale (20000 = 20 MSPS)
@@ -34,8 +35,7 @@ VIDEO_CUTOFF = "0-9600"  # sinc lowpass for video
 HIFI_RATE = 10000  # target hifi rate in FLAC-scale (10000 = 10 MSPS)
 HIFI_CUTOFF = "0-3050"  # sinc lowpass for hifi
 SINC_TAPS = 2500  # sinc filter length
-FLAC_LEVEL = 8
-BLOCKSIZE = 65535
+BLOCKSIZE = RF_BLOCKSIZE
 
 # Preset (video rate, video cutoff) pairs
 PRESETS: dict[str, tuple[int, str]] = {
@@ -84,12 +84,11 @@ def _pipeline(
         "-b", str(bps), "-r", str(target_rate), "-c", "1", "-e", "unsigned", "-t", "raw", "-",
         "sinc", "-n", str(taps), cutoff,
     ]  # fmt: skip
-    encode = [
-        "flac", "--silent", f"-{flac_level}", f"--blocksize={BLOCKSIZE}", "--lax",
-        f"--sample-rate={target_rate}", "--channels=1", f"--bps={bps}",
-        "--sign=unsigned", "--endian=little",
-        "-f", "-", "-o", str(part),
-    ]  # fmt: skip
+    # Resampled RF stays RF: the same non-subset settings the captures use.
+    encode = flac_encode_cmd(
+        "-", part, bps=bps, sign="unsigned", rate=target_rate, channels=1,
+        blocksize=BLOCKSIZE, level=flac_level, lax=True,
+    )  # fmt: skip
 
     try:
         decoder = subprocess.Popen(decode, stdout=subprocess.PIPE)
@@ -108,6 +107,9 @@ def _pipeline(
     except BaseException:
         part.unlink(missing_ok=True)
         raise
+    # Freshly written at the target level — record it so rf-compress skips this
+    # file instantly instead of probing a gigabyte to learn the same thing.
+    set_level_tag(part, flac_level)
     part.replace(out)
 
 

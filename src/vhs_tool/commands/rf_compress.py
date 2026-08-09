@@ -64,22 +64,32 @@ from pathlib import Path
 from typing import NamedTuple
 
 from ..common import ToolError, check_deps, confirm, log, run
+from ..flac import (
+    AUDIO_BLOCKSIZE,
+    CHUNK,
+    ENDIAN,
+    FLAC_LEVEL,
+    LEVEL_TAG,
+    RF_BLOCKSIZE,
+    FlacInfo,
+    encode_settings,
+    flac_decode_raw_cmd,
+    flac_encode_cmd,
+    flac_metadata_length,
+    read_flac_info,
+    read_level_tag,
+    set_level_tag,
+)
 
 # -- Defaults ------------------------------------------------------------------
-FLAC_LEVEL = 8
-BLOCKSIZE = 65535
+BLOCKSIZE = RF_BLOCKSIZE
 RATE = 40000  # 40 MSPS → stored as 40000 Hz (FLAC-scale, 1000:1)
 CHANNELS = 1
-ENDIAN = "little"
 MAX_THREADS = 128  # flac's own upper limit for --threads
-CHUNK = 1 << 20  # MD5 read size
 
 # -- Recompression defaults ----------------------------------------------------
-LEVEL_TAG = "VHS_TOOL_FLAC_LEVEL"  # Vorbis comment marking a verified level
 PROBE_MIB = 1024  # probe window read from the start of the compressed file
 MIN_GAIN_PCT = 0.5  # recompress only when the probe projects at least this gain
-SUBSET_MAX_BLOCKSIZE = 4608  # FLAC streaming-subset blocksize limit for rates ≤ 48 kHz
-AUDIO_BLOCKSIZE = 4096  # flac's default blocksize; keeps audio re-encodes subset
 
 # Raw capture extensions in scan order → (bits per sample, sign).
 RAW_FORMATS: dict[str, tuple[int, str]] = {
@@ -112,21 +122,6 @@ class CompressResult(NamedTuple):
     status: str  # "compressed" | "skipped" | "error"
     raw_size: int = 0
     flac_size: int = 0
-
-
-class FlacInfo(NamedTuple):
-    """STREAMINFO fields of an existing FLAC (via metaflac)."""
-
-    md5: str  # hex digest of the unencoded samples; all zeros if the encoder couldn't seek back
-    min_blocksize: int
-    max_blocksize: int
-    sample_rate: int
-    channels: int
-    bps: int
-
-    @property
-    def has_md5(self) -> bool:
-        return set(self.md5) != {"0"}
 
 
 class AnaFrame(NamedTuple):
@@ -208,79 +203,6 @@ def resolve_threads(requested: int | None, version: FlacVersion) -> int:
     return min(os.cpu_count() or 1, MAX_THREADS)
 
 
-def flac_encode_cmd(
-    file: Path | str, out: Path | None, *, bps: int, sign: str, rate: int, channels: int,
-    blocksize: int, level: int, threads: int, lax: bool = True,
-) -> list[str]:  # fmt: skip
-    """flac command line encoding one capture with the given settings.
-
-    `file` may be "-" for stdin; `out=None` encodes to stdout. `lax` allows
-    non-subset streams (needed for the RF blocksize of 65535) and must be off
-    for subset audio files.
-    """
-    cmd = ["flac", "--silent", f"-{level}"]
-    if threads:
-        cmd.append(f"--threads={threads}")
-    cmd.append(f"--blocksize={blocksize}")
-    if lax:
-        cmd.append("--lax")
-    cmd += [
-        f"--sample-rate={rate}", f"--channels={channels}", f"--bps={bps}",
-        f"--sign={sign}", f"--endian={ENDIAN}",
-        "-f",
-    ]  # fmt: skip
-    if out is None:
-        cmd += ["--stdout", str(file)]
-    else:
-        cmd += [str(file), "-o", str(out)]
-    return cmd
-
-
-def flac_decode_raw_cmd(file: Path) -> list[str]:
-    """flac command decoding a FLAC to canonical raw samples (signed/little) on stdout.
-
-    Decoding also verifies each frame's CRC and — at end of stream — the
-    STREAMINFO MD5, so a nonzero exit proves the source did not decode to
-    what its header claims.
-    """
-    return [
-        "flac", "--silent", "-d", "--force-raw-format",
-        "--sign=signed", f"--endian={ENDIAN}", "--stdout", str(file),
-    ]  # fmt: skip
-
-
-def recompress_settings(info: FlacInfo, rf_blocksize: int) -> tuple[int, bool]:
-    """(blocksize, lax) for re-encoding a FLAC, preserving its character.
-
-    RF-style sources (non-subset blocksize, e.g. video/hifi/headswitch RF at
-    65535) keep the RF-optimal settings. Normal subset audio (e.g. linear
-    captures at blocksize 1152) is re-encoded at flac's default blocksize
-    without --lax — it stays a subset stream every player can read, and on
-    real audio that also compresses better than the huge RF blocks.
-    """
-    if info.max_blocksize > SUBSET_MAX_BLOCKSIZE:
-        return rf_blocksize, True
-    return AUDIO_BLOCKSIZE, False
-
-
-def parse_flac_info(output: str) -> FlacInfo:
-    """Parse the six lines of `metaflac --show-md5sum --show-min-blocksize ...`."""
-    lines = [line.strip() for line in output.splitlines() if line.strip()]
-    if len(lines) != 6 or not all(line.isdigit() for line in lines[1:]):
-        raise ToolError(f"unexpected metaflac output: {output!r}")
-    md5, *nums = lines
-    return FlacInfo(md5.lower(), *(int(n) for n in nums))
-
-
-def parse_level_tag(output: str) -> int | None:
-    """Level from `metaflac --show-tag=...` output (``NAME=8``), or None."""
-    for line in output.splitlines():
-        name, sep, value = line.partition("=")
-        if sep and name.strip().upper() == LEVEL_TAG and value.strip().isdigit():
-            return int(value.strip())
-    return None
-
-
 def parse_ana_frame(line: str) -> AnaFrame | None:
     """Frame accounting from one `flac --analyze` line, or None for other lines."""
     match = _ANA_FRAME_RE.match(line)
@@ -293,20 +215,6 @@ def parse_ana_order(line: str) -> int | None:
     """Predictor order from a `flac --analyze` subframe line, or None."""
     match = _ANA_ORDER_RE.search(line)
     return int(match.group(1)) if match else None
-
-
-def flac_metadata_length(head: bytes) -> int:
-    """Byte length of the metadata section at the start of a FLAC stream."""
-    if head[:4] != b"fLaC":
-        raise ToolError("not a FLAC stream")
-    pos = 4
-    while True:
-        if pos + 4 > len(head):
-            raise ToolError("FLAC metadata longer than the buffered stream head")
-        header = head[pos]
-        pos += 4 + int.from_bytes(head[pos + 1 : pos + 4], "big")
-        if header & 0x80:  # last-metadata-block flag
-            return pos
 
 
 def build_plan(
@@ -378,50 +286,6 @@ def md5_flac_raw(file: Path, *, sign: str) -> str:
     if returncode != 0:
         raise ToolError(f"flac (decode) exited with code {returncode}")
     return digest.hexdigest()
-
-
-# =============================================================================
-# FLAC metadata (metaflac)
-# =============================================================================
-
-
-def read_flac_info(file: Path) -> FlacInfo:
-    """STREAMINFO of an existing FLAC."""
-    out = run(
-        ["metaflac", "--show-md5sum", "--show-min-blocksize", "--show-max-blocksize",
-         "--show-sample-rate", "--show-channels", "--show-bps", file],
-        capture=True,
-    ).stdout  # fmt: skip
-    return parse_flac_info(out)
-
-
-def read_level_tag(file: Path) -> int | None:
-    """Verified level stored in the file's Vorbis comment, or None."""
-    out = run(["metaflac", f"--show-tag={LEVEL_TAG}", file], capture=True).stdout
-    return parse_level_tag(out)
-
-
-def has_padding(file: Path) -> bool:
-    out = run(["metaflac", "--list", "--block-type=PADDING", file], capture=True).stdout
-    return bool(out.strip())
-
-
-def set_level_tag(file: Path, level: int) -> bool:
-    """Store the verified level as a Vorbis comment; best-effort, never raises.
-
-    Requires an existing PADDING block: without one metaflac would rewrite the
-    entire file just to fit the tag — not worth it on captures of hundreds of
-    GB. An untagged file merely gets probed again on the next run.
-    """
-    try:
-        if not has_padding(file):
-            log("    → no PADDING block — not tagging (metaflac would rewrite the whole file)")
-            return False
-        run(["metaflac", f"--remove-tag={LEVEL_TAG}", f"--set-tag={LEVEL_TAG}={level}", file])
-        return True
-    except ToolError as exc:
-        log(f"    → tagging failed ({exc})")
-        return False
 
 
 # =============================================================================
@@ -687,7 +551,7 @@ def recompress_file(
     (see probe_flac) and only fully re-encoded when the projected gain reaches
     `min_gain_pct` percent. `force` recompresses unconditionally.
 
-    Encode settings follow the source's character (see recompress_settings):
+    Encode settings follow the source's character (see flac.encode_settings):
     RF-style files keep `blocksize` + --lax, subset audio files are re-encoded
     as subset streams at flac's default blocksize.
 
@@ -715,7 +579,7 @@ def recompress_file(
         return CompressResult("skipped")
 
     # RF-style sources keep the RF settings; subset audio stays subset.
-    blocksize, lax = recompress_settings(info, blocksize)
+    blocksize, lax = encode_settings(file, info, blocksize)
     if not lax:
         log(f"    → subset audio FLAC — re-encoding at blocksize {blocksize} without --lax")
 

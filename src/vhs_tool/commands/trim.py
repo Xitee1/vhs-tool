@@ -20,30 +20,47 @@ linear ...).
 Output: the trimmed result takes the original file name; the untouched original
 is preserved alongside it as `<file>.bak`. Pass --delete-original to remove it.
 
-Requires: sox (with FLAC support)
+Trimming a FLAC is "keep the first N samples", which in the decoded raw domain
+is a plain byte cut — so the trimmed file is written by decoding the source,
+cutting the stream and re-encoding it (see vhs_tool.flac), exactly like the
+`.u8` path has always worked. That keeps RF captures at their RF-optimal
+settings and linear audio a subset stream, and lets the result carry the same
+verified-level tag `rf-compress` writes. Verification is free: the MD5 of the
+bytes streamed into the encoder must match the STREAMINFO MD5 it wrote.
 
-Ref: the wiki recommends SoX over FFmpeg for RF data:
+Requires: flac + metaflac, sox/soxi (sample-rate and fallback sample counting)
+
+Ref: the wiki recommends the FLAC CLI (not FFmpeg) for RF data:
   https://github.com/oyvindln/vhs-decode/wiki/RF-Compression-&-Decompression-Guide
-
-Note: sox output uses explicit -C 8 (FLAC compression level 8). Level 8 is
-optimal for RF data; levels 9+ (--lax) cause ~42% file bloat.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 from ..common import ToolError, check_deps, derive_base, log, run, soxi
+from ..flac import (
+    CHUNK,
+    FLAC_LEVEL,
+    FlacInfo,
+    encode_settings,
+    flac_decode_raw_cmd,
+    flac_encode_cmd,
+    read_flac_info,
+    set_level_tag,
+)
 
 # -- Defaults ------------------------------------------------------------------
 RF_SCALE = 1000  # FLAC kHz → real MHz multiplier (standard: 1000)
 OFFSET = 4  # seconds added to --end to compensate vhs-decode lock-in
-FLAC_LEVEL = 8  # FLAC compression level for sox output (optimal for RF)
 
 _NUM_RE = re.compile(r"^[0-9]*\.?[0-9]+$")
 
@@ -216,11 +233,83 @@ def _copy_head(src: Path, dst: Path, nbytes: int) -> None:
     remaining = nbytes
     with open(src, "rb") as fin, open(dst, "wb") as fout:
         while remaining > 0:
-            chunk = fin.read(min(remaining, 1 << 20))
+            chunk = fin.read(min(remaining, CHUNK))
             if not chunk:
                 break
             fout.write(chunk)
             remaining -= len(chunk)
+
+
+def encode_head(
+    file: Path, out: Path, info: FlacInfo, keep_samples: int, *,
+    level: int, blocksize: int, lax: bool, dry_run: bool = False, verbose: bool = False,
+) -> None:  # fmt: skip
+    """Write the first `keep_samples` of `file` to `out` as a fresh FLAC.
+
+    Trimming is a byte cut in the decoded raw domain, so the file is decoded,
+    the stream is cut and the head is re-encoded — which is what lets the
+    result use settings chosen for the data instead of whatever the writing
+    tool defaults to.
+
+    Verification comes for free: every byte passes through here anyway, so the
+    MD5 of what was fed to the encoder is compared against the STREAMINFO MD5
+    the encoder computed, proving the trimmed file holds exactly those samples.
+    """
+    dec_cmd = flac_decode_raw_cmd(file)
+    enc_cmd = flac_encode_cmd(
+        "-", out, bps=info.bps, sign="signed", rate=info.sample_rate,
+        channels=info.channels, blocksize=blocksize, level=level, lax=lax,
+    )  # fmt: skip
+    remaining = keep_samples * info.bytes_per_sample
+    if verbose or dry_run:
+        print(
+            f"  $ {shlex.join(dec_cmd)} | head -c {remaining} | {shlex.join(enc_cmd)}",
+            file=sys.stderr,
+        )
+    if dry_run:
+        return
+
+    digest = hashlib.md5()
+    truncated = False
+    decoder = subprocess.Popen(dec_cmd, stdout=subprocess.PIPE)
+    try:
+        encoder = subprocess.Popen(enc_cmd, stdin=subprocess.PIPE)
+    except BaseException:
+        decoder.kill()
+        decoder.wait()
+        raise
+    try:
+        while remaining > 0:
+            chunk = decoder.stdout.read(min(CHUNK, remaining))
+            if not chunk:
+                truncated = True
+                break
+            digest.update(chunk)
+            try:
+                encoder.stdin.write(chunk)
+            except BrokenPipeError:  # encoder died; its exit code reports why
+                break
+            remaining -= len(chunk)
+    finally:
+        with contextlib.suppress(OSError):
+            encoder.stdin.close()
+        # The decoder is stopped on purpose once the head is read, so its own
+        # exit code carries no meaning here.
+        decoder.terminate()
+        decoder.stdout.close()
+        decoder.wait()
+        encoder_rc = encoder.wait()
+
+    if encoder_rc != 0:
+        raise ToolError(f"flac (encode) exited with code {encoder_rc}")
+    if truncated:
+        raise ToolError(
+            f"source ended {remaining} byte(s) before the requested sample count — "
+            "the trim point does not fit the file"
+        )
+    written_md5 = read_flac_info(out).md5
+    if written_md5 != digest.hexdigest():
+        raise ToolError("MD5 mismatch between the streamed samples and the written FLAC")
 
 
 # =============================================================================
@@ -256,9 +345,11 @@ def trim_file(
     already-computed FLAC sample count and skip a second (potentially slow) scan.
     """
     ext = file.suffix.lower()
+    info: FlacInfo | None = None
     if ext == ".flac":
+        info = read_flac_info(file)
         total = known_samples if known_samples is not None else get_samples(file)
-        rate = soxi(file, "-r")
+        rate = info.sample_rate
         unit = "samples"
     elif ext == ".u8":
         total = file.stat().st_size  # raw unsigned 8-bit: 1 byte = 1 sample
@@ -292,15 +383,25 @@ def trim_file(
     #    A failed/interrupted write must not leave a partial tmp behind — it
     #    would poison the next run.
     if ext == ".flac":
-        sox_cmd = ["sox", str(file), "-C", str(flac_level), str(tmp), "trim", "0", f"{keep}s"]
-        if verbose or dry_run:
-            print(f"  $ {shlex.join(sox_cmd)}", file=sys.stderr)
+        assert info is not None  # set together with ext == ".flac" above
+        blocksize, lax = encode_settings(file, info)
+        log(
+            f"    {'RF' if lax else 'audio'}: flac -{flac_level} --blocksize={blocksize}"
+            + (" --lax" if lax else "")
+        )
+        try:
+            encode_head(
+                file, tmp, info, keep,
+                level=flac_level, blocksize=blocksize, lax=lax,
+                dry_run=dry_run, verbose=verbose,
+            )  # fmt: skip
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         if not dry_run:
-            try:
-                run(sox_cmd)
-            except BaseException:
-                tmp.unlink(missing_ok=True)
-                raise
+            # The re-encode is a fresh file at the target level, so record that
+            # the same way rf-compress does — no stale tag can survive here.
+            set_level_tag(tmp, flac_level)
     else:  # .u8
         if verbose or dry_run:
             print(f"  $ head -c {keep} {file} > {tmp}", file=sys.stderr)
@@ -392,7 +493,7 @@ def add_parser(subparsers) -> None:
 
 
 def cmd_trim(args: argparse.Namespace) -> int:
-    check_deps("sox", "soxi")
+    check_deps("flac", "metaflac", "sox", "soxi")
 
     mode, time_value = resolve_mode(args.end, args.trim)
     time_seconds = parse_timestamp(time_value)
