@@ -4,7 +4,7 @@ Port of tools/6_export.sh (Step 1 of the publish pipeline).
 
 Output files:
   {output}.ffv1.mkv     Lossless FFV1 10-bit 4:2:2 video
-  {output}.hifi.opus    HiFi Opus audio (if HiFi source exists)
+  {output}.hifi.opus    HiFi Opus audio (skipped with a warning if no HiFi source exists)
   {output}.linear.opus  Linear Opus audio
 
 Run this first, then `vhs-tool encode` for postprocessing and final encoding.
@@ -262,8 +262,11 @@ def cmd_export(args: argparse.Namespace) -> int:
     if should_run("linear") and not linear_flac.is_file():
         raise ToolError(f"Linear audio not found: {linear_flac}")
 
+    # A missing HiFi track is normal (tapes without HiFi, or `vhs-tool audio`
+    # dropped a noise-only decode) — skip it with a warning, like `vhs-tool
+    # audio` does. Only an explicit `--only hifi` turns it into an error.
     has_hifi = hifi_flac.is_file()
-    if should_run("hifi") and not has_hifi:
+    if "hifi" in only and not has_hifi:
         raise ToolError(f"HiFi audio not found: {hifi_flac}")
 
     Path(output).parent.mkdir(parents=True, exist_ok=True)
@@ -309,15 +312,15 @@ def cmd_export(args: argparse.Namespace) -> int:
     else:
         print("\nSkipping Linear audio")
 
-    if should_run("hifi") and has_hifi:
+    if not should_run("hifi"):
+        print("\nSkipping HiFi audio")
+    elif has_hifi:
         print("\nTranscoding HiFi audio...")
         transcode_opus(
             hifi_flac, hifi_opus, hifi_mode, HIFI_BITRATE_STEREO, HIFI_BITRATE_MONO, "HiFi"
         )
-    elif not has_hifi:
-        print("\nNo HiFi source found")
     else:
-        print("\nSkipping HiFi audio")
+        print(f"\nWARN: HiFi audio not found, skipping HiFi: {hifi_flac}")
 
     # Export FFV1 from TBC
     ffv1_file = Path(f"{output}.ffv1.mkv")
@@ -372,6 +375,9 @@ def cmd_export(args: argparse.Namespace) -> int:
         if file.is_file():
             print(f"  {label}: {file} ({human_size(file)})")
     print()
+    if should_run("hifi") and not has_hifi:
+        print(f"WARNING: No HiFi audio found ({hifi_flac}) — exported without HiFi.")
+        print()
     print("Next: Run `vhs-tool encode` to postprocess and encode.")
     print("=" * 60)
     return 0
