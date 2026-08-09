@@ -2,23 +2,80 @@ from pathlib import Path
 
 import pytest
 
+import vhs_tool.flac as flac_module
 from vhs_tool.common import ToolError
 from vhs_tool.flac import (
     AUDIO_BLOCKSIZE,
     RF_BLOCKSIZE,
     FlacInfo,
+    FlacVersion,
     encode_settings,
     flac_decode_raw_cmd,
     flac_encode_cmd,
     flac_metadata_length,
     parse_flac_info,
+    parse_flac_version,
     parse_level_tag,
+    resolve_threads,
     source_kind,
 )
 
 
 def _info(*, blocksize=65535, rate=40000, channels=1, bps=8, md5="a" * 32) -> FlacInfo:
     return FlacInfo(md5, blocksize, blocksize, rate, channels, bps)
+
+
+# =============================================================================
+# Encoder threads
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("flac 1.5.0\nCopyright ...", FlacVersion("1.5.0", 1, 5)),
+        ("flac 1.4.3", FlacVersion("1.4.3", 1, 4)),
+        ("flac 2.0", FlacVersion("2.0", 2, 0)),
+        ("", FlacVersion("unknown", 0, 0)),
+        ("command not found", FlacVersion("unknown", 0, 0)),
+    ],
+)
+def test_parse_flac_version(output, expected):
+    assert parse_flac_version(output) == expected
+
+
+def test_supports_threads():
+    # --threads only exists from flac 1.5.0 on
+    assert FlacVersion("1.5.0", 1, 5).supports_threads
+    assert FlacVersion("2.0.0", 2, 0).supports_threads
+    assert not FlacVersion("1.4.3", 1, 4).supports_threads
+    assert not FlacVersion("unknown", 0, 0).supports_threads
+
+
+def test_resolve_threads(monkeypatch):
+    monkeypatch.setattr(flac_module.os, "cpu_count", lambda: 16)
+    modern, old = FlacVersion("1.5.0", 1, 5), FlacVersion("1.4.3", 1, 4)
+    assert resolve_threads(None, modern) == 16  # auto → all cores
+    assert resolve_threads(4, modern) == 4
+    assert resolve_threads(0, modern) == 0
+    assert resolve_threads(None, old) == 0  # flag does not exist yet
+    assert resolve_threads(8, old) == 0  # requested → dropped (with a warning)
+
+
+def test_resolve_threads_caps_at_flac_limit(monkeypatch):
+    monkeypatch.setattr(flac_module.os, "cpu_count", lambda: 512)
+    assert resolve_threads(None, FlacVersion("1.5.0", 1, 5)) == flac_module.MAX_THREADS
+
+
+def test_detect_threads_asks_the_installed_flac(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        flac_module, "run", lambda cmd, **kw: SimpleNamespace(stdout="flac 1.5.0\n")
+    )
+    monkeypatch.setattr(flac_module.os, "cpu_count", lambda: 4)
+    assert flac_module.detect_threads(announce=False) == 4
+    assert flac_module.detect_threads(2, announce=False) == 2
 
 
 # =============================================================================

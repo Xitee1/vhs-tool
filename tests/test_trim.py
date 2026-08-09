@@ -136,6 +136,7 @@ def patched_io(monkeypatch):
     monkeypatch.setattr(trim, "soxi", lambda file, flag: 10_000)
     monkeypatch.setattr(trim, "read_flac_info", lambda file: RF_INFO)
     monkeypatch.setattr(trim, "set_level_tag", lambda file, level: True)
+    monkeypatch.setattr(trim, "detect_threads", lambda requested=None: 0)
 
 
 def _encode_ok(file, out, info, keep_samples, **kwargs):
@@ -159,6 +160,7 @@ def _args(base, **overrides):
         delete_original=False,
         offset=4.0,
         rf_scale=1000,
+        threads=None,
         dry_run=False,
         verbose=False,
     )

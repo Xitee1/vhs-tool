@@ -27,6 +27,8 @@ See: https://github.com/harrypm/Scripts/issues/2
 
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 from typing import NamedTuple
 
@@ -39,6 +41,9 @@ AUDIO_BLOCKSIZE = 4096  # flac's default; keeps audio re-encodes subset
 SUBSET_MAX_BLOCKSIZE = 4608  # FLAC streaming-subset blocksize limit for rates ≤ 48 kHz
 ENDIAN = "little"
 CHUNK = 1 << 20  # pipe/hash read size
+MAX_THREADS = 128  # flac's own upper limit for --threads
+
+_VERSION_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
 
 # Vorbis comment marking a file as verified for a compression level: either
 # actually encoded at it, or measured to gain nothing worthwhile from it.
@@ -71,6 +76,64 @@ class FlacInfo(NamedTuple):
         if self.bps % 8:
             raise ToolError(f"unsupported bit depth for raw processing: {self.bps}")
         return self.channels * (self.bps // 8)
+
+
+class FlacVersion(NamedTuple):
+    """Parsed `flac --version` output."""
+
+    text: str  # as printed, e.g. "1.5.0" ("unknown" if unparsable)
+    major: int
+    minor: int
+
+    @property
+    def supports_threads(self) -> bool:
+        """flac gained multi-threaded encoding (--threads) in 1.5.0."""
+        return (self.major, self.minor) >= (1, 5)
+
+
+# =============================================================================
+# Encoder threads
+# =============================================================================
+
+
+def parse_flac_version(output: str) -> FlacVersion:
+    """Parse the first line of `flac --version` (e.g. 'flac 1.5.0')."""
+    first_line = output.splitlines()[0] if output.strip() else ""
+    match = _VERSION_RE.search(first_line)
+    if not match:
+        return FlacVersion("unknown", 0, 0)
+    return FlacVersion(match.group(0), int(match.group(1)), int(match.group(2)))
+
+
+def resolve_threads(requested: int | None, version: FlacVersion) -> int:
+    """FLAC encoder thread count; 0 means "don't pass --threads at all".
+
+    Without an explicit request all cores are used (capped at flac's limit).
+    On a flac older than 1.5.0 the flag does not exist, so it is dropped —
+    with a warning when it was asked for explicitly.
+    """
+    if not version.supports_threads:
+        if requested:
+            log(
+                f"WARNING: --threads requested but FLAC {version.text} < 1.5.0 — "
+                "threading not available"
+            )
+        return 0
+    if requested is not None:
+        return max(requested, 0)
+    return min(os.cpu_count() or 1, MAX_THREADS)
+
+
+def detect_threads(requested: int | None = None, *, announce: bool = True) -> int:
+    """Ask the installed flac for its version and resolve the thread count."""
+    version = parse_flac_version(run(["flac", "--version"], capture=True, check=False).stdout)
+    threads = resolve_threads(requested, version)
+    if announce:
+        if threads > 1:
+            log(f"FLAC {version.text} — multi-threaded encoding with {threads} threads")
+        else:
+            log(f"FLAC {version.text} — single-threaded encoding")
+    return threads
 
 
 # =============================================================================

@@ -54,7 +54,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
-import os
 import re
 import shlex
 import subprocess
@@ -72,6 +71,7 @@ from ..flac import (
     LEVEL_TAG,
     RF_BLOCKSIZE,
     FlacInfo,
+    detect_threads,
     encode_settings,
     flac_decode_raw_cmd,
     flac_encode_cmd,
@@ -85,7 +85,6 @@ from ..flac import (
 BLOCKSIZE = RF_BLOCKSIZE
 RATE = 40000  # 40 MSPS → stored as 40000 Hz (FLAC-scale, 1000:1)
 CHANNELS = 1
-MAX_THREADS = 128  # flac's own upper limit for --threads
 
 # -- Recompression defaults ----------------------------------------------------
 PROBE_MIB = 1024  # probe window read from the start of the compressed file
@@ -100,22 +99,8 @@ RAW_FORMATS: dict[str, tuple[int, str]] = {
     "r16": (16, "signed"),
 }
 
-_VERSION_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
 _ANA_FRAME_RE = re.compile(r"^frame=\d+\toffset=(\d+)\tbits=(\d+)\tblocksize=(\d+)\t")
 _ANA_ORDER_RE = re.compile(r"\ttype=(?:LPC|FIXED)\torder=(\d+)")
-
-
-class FlacVersion(NamedTuple):
-    """Parsed `flac --version` output."""
-
-    text: str  # as printed, e.g. "1.5.0" ("unknown" if unparsable)
-    major: int
-    minor: int
-
-    @property
-    def supports_threads(self) -> bool:
-        """flac gained multi-threaded encoding (--threads) in 1.5.0."""
-        return (self.major, self.minor) >= (1, 5)
 
 
 class CompressResult(NamedTuple):
@@ -173,34 +158,6 @@ def human_bytes(size: int) -> str:
 def detect_format(ext: str) -> tuple[int, str] | None:
     """(bps, sign) for a raw capture extension, or None if unknown."""
     return RAW_FORMATS.get(ext.lstrip(".").lower())
-
-
-def parse_flac_version(output: str) -> FlacVersion:
-    """Parse the first line of `flac --version` (e.g. 'flac 1.5.0')."""
-    first_line = output.splitlines()[0] if output.strip() else ""
-    match = _VERSION_RE.search(first_line)
-    if not match:
-        return FlacVersion("unknown", 0, 0)
-    return FlacVersion(match.group(0), int(match.group(1)), int(match.group(2)))
-
-
-def resolve_threads(requested: int | None, version: FlacVersion) -> int:
-    """FLAC encoder thread count; 0 means "don't pass --threads at all".
-
-    Without an explicit request all cores are used (capped at flac's limit).
-    On a flac older than 1.5.0 the flag does not exist, so it is dropped —
-    with a warning when it was asked for explicitly.
-    """
-    if not version.supports_threads:
-        if requested:
-            log(
-                f"WARNING: --threads requested but FLAC {version.text} < 1.5.0 — "
-                "threading not available"
-            )
-        return 0
-    if requested is not None:
-        return max(requested, 0)
-    return min(os.cpu_count() or 1, MAX_THREADS)
 
 
 def parse_ana_frame(line: str) -> AnaFrame | None:
@@ -833,12 +790,7 @@ def cmd_rf_compress(args: argparse.Namespace) -> int:
             log("Aborted.")
             return 1
 
-    version = parse_flac_version(run(["flac", "--version"], capture=True, check=False).stdout)
-    threads = resolve_threads(args.threads, version)
-    if threads > 1:
-        log(f"FLAC {version.text} — multi-threaded encoding with {threads} threads")
-    else:
-        log(f"FLAC {version.text} — single-threaded encoding")
+    threads = detect_threads(args.threads)
     print(file=sys.stderr)
 
     counts = {"compressed": 0, "skipped": len(plan.verified), "error": 0}

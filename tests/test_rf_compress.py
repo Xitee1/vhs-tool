@@ -6,7 +6,6 @@ import pytest
 import vhs_tool.commands.rf_compress as rf_compress
 from vhs_tool.commands.rf_compress import (
     AnaFrame,
-    FlacVersion,
     ProbeResult,
     compress_file,
     detect_format,
@@ -15,9 +14,7 @@ from vhs_tool.commands.rf_compress import (
     human_bytes,
     parse_ana_frame,
     parse_ana_order,
-    parse_flac_version,
     recompress_file,
-    resolve_threads,
 )
 from vhs_tool.common import ToolError
 from vhs_tool.flac import FlacInfo
@@ -45,43 +42,6 @@ def test_human_bytes():
     assert human_bytes(1024) == "1 KiB"
     assert human_bytes(5 * 1048576) == "5.0 MiB"
     assert human_bytes(3 * 1073741824) == "3.00 GiB"
-
-
-@pytest.mark.parametrize(
-    ("output", "expected"),
-    [
-        ("flac 1.5.0\nCopyright ...", FlacVersion("1.5.0", 1, 5)),
-        ("flac 1.4.3", FlacVersion("1.4.3", 1, 4)),
-        ("flac 2.0", FlacVersion("2.0", 2, 0)),
-        ("", FlacVersion("unknown", 0, 0)),
-        ("command not found", FlacVersion("unknown", 0, 0)),
-    ],
-)
-def test_parse_flac_version(output, expected):
-    assert parse_flac_version(output) == expected
-
-
-def test_supports_threads():
-    # --threads only exists from flac 1.5.0 on
-    assert FlacVersion("1.5.0", 1, 5).supports_threads
-    assert FlacVersion("2.0.0", 2, 0).supports_threads
-    assert not FlacVersion("1.4.3", 1, 4).supports_threads
-    assert not FlacVersion("unknown", 0, 0).supports_threads
-
-
-def test_resolve_threads(monkeypatch):
-    monkeypatch.setattr(rf_compress.os, "cpu_count", lambda: 16)
-    modern, old = FlacVersion("1.5.0", 1, 5), FlacVersion("1.4.3", 1, 4)
-    assert resolve_threads(None, modern) == 16  # auto → all cores
-    assert resolve_threads(4, modern) == 4
-    assert resolve_threads(0, modern) == 0
-    assert resolve_threads(None, old) == 0  # flag does not exist yet
-    assert resolve_threads(8, old) == 0  # requested → dropped (with a warning)
-
-
-def test_resolve_threads_caps_at_flac_limit(monkeypatch):
-    monkeypatch.setattr(rf_compress.os, "cpu_count", lambda: 512)
-    assert resolve_threads(None, FlacVersion("1.5.0", 1, 5)) == rf_compress.MAX_THREADS
 
 
 def test_find_raw_files_is_not_recursive(tmp_path):

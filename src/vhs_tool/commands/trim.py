@@ -28,7 +28,8 @@ settings and linear audio a subset stream, and lets the result carry the same
 verified-level tag `rf-compress` writes. Verification is free: the MD5 of the
 bytes streamed into the encoder must match the STREAMINFO MD5 it wrote.
 
-Requires: flac + metaflac, sox/soxi (sample-rate and fallback sample counting)
+Requires: flac + metaflac (≥1.5 for multi-threaded encoding), sox/soxi
+(sample-rate and fallback sample counting)
 
 Ref: the wiki recommends the FLAC CLI (not FFmpeg) for RF data:
   https://github.com/oyvindln/vhs-decode/wiki/RF-Compression-&-Decompression-Guide
@@ -51,6 +52,7 @@ from ..flac import (
     CHUNK,
     FLAC_LEVEL,
     FlacInfo,
+    detect_threads,
     encode_settings,
     flac_decode_raw_cmd,
     flac_encode_cmd,
@@ -242,7 +244,8 @@ def _copy_head(src: Path, dst: Path, nbytes: int) -> None:
 
 def encode_head(
     file: Path, out: Path, info: FlacInfo, keep_samples: int, *,
-    level: int, blocksize: int, lax: bool, dry_run: bool = False, verbose: bool = False,
+    level: int, blocksize: int, lax: bool, threads: int = 0,
+    dry_run: bool = False, verbose: bool = False,
 ) -> None:  # fmt: skip
     """Write the first `keep_samples` of `file` to `out` as a fresh FLAC.
 
@@ -258,7 +261,7 @@ def encode_head(
     dec_cmd = flac_decode_raw_cmd(file)
     enc_cmd = flac_encode_cmd(
         "-", out, bps=info.bps, sign="signed", rate=info.sample_rate,
-        channels=info.channels, blocksize=blocksize, level=level, lax=lax,
+        channels=info.channels, blocksize=blocksize, level=level, threads=threads, lax=lax,
     )  # fmt: skip
     remaining = keep_samples * info.bytes_per_sample
     if verbose or dry_run:
@@ -335,6 +338,7 @@ def trim_file(
     known_samples: int | None = None,
     delete_original: bool = False,
     flac_level: int = FLAC_LEVEL,
+    threads: int = 0,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> bool:
@@ -388,11 +392,12 @@ def trim_file(
         log(
             f"    {'RF' if lax else 'audio'}: flac -{flac_level} --blocksize={blocksize}"
             + (" --lax" if lax else "")
+            + (f" --threads={threads}" if threads else "")
         )
         try:
             encode_head(
                 file, tmp, info, keep,
-                level=flac_level, blocksize=blocksize, lax=lax,
+                level=flac_level, blocksize=blocksize, lax=lax, threads=threads,
                 dry_run=dry_run, verbose=verbose,
             )  # fmt: skip
         except BaseException:
@@ -479,6 +484,12 @@ def add_parser(subparsers) -> None:
         "header (e.g. 40000 Hz = 40 MSPS), so real samples/s = FLAC rate × this "
         "value. Used to convert your --end/--trim seconds into a sample count and "
         "to report the true capture duration; the standard captures need 1000.",
+    )
+    parser.add_argument(
+        "-t",
+        "--threads",
+        type=int,
+        help="FLAC encoder threads (default: all cores, needs FLAC ≥ 1.5.0)",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print what would be done without executing"
@@ -573,6 +584,7 @@ def cmd_trim(args: argparse.Namespace) -> int:
     log()
 
     # -- Trim each file --------------------------------------------------------
+    threads = detect_threads(args.threads)
     errors = 0
     for file in trim_files:
         try:
@@ -583,6 +595,7 @@ def cmd_trim(args: argparse.Namespace) -> int:
                 # headerless FLAC is not scanned a second time.
                 known_samples=ref_samples if file == ref_file else None,
                 delete_original=args.delete_original,
+                threads=threads,
                 dry_run=args.dry_run,
                 verbose=args.verbose,
             )
