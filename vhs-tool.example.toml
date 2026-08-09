@@ -74,7 +74,7 @@
 #clockgen_video_out = 0
 #clockgen_hifi_out = 1
 # Pre-flight: resources (the server allocates a 1 GiB ring buffer per card)
-#min_free_disk_gib = 350.0
+#min_free_disk_gib = 400.0
 #ram_headroom_gib = 1.0
 
 # Capture hardware description — verbatim text for Notes.txt

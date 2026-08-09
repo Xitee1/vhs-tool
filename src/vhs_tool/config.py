@@ -95,7 +95,7 @@ class Capture:
     clockgen_video_out: int = 0  # clockgen output wired to the video card
     clockgen_hifi_out: int = 1  # clockgen output wired to the hifi card
     # Pre-flight: resources (the server allocates a 1 GiB ring buffer per card)
-    min_free_disk_gib: float = 350.0
+    min_free_disk_gib: float = 400.0  # a 4 h tape needs ~300-400 GiB at level 8
     ram_headroom_gib: float = 1.0  # required free RAM beyond the ring buffers
 
 
