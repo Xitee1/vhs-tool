@@ -108,3 +108,22 @@ def test_invalid_toml_rejected(tmp_path):
     file.write_text("[paths\n", encoding="utf-8")
     with pytest.raises(ToolError, match="Invalid TOML"):
         load_config(file)
+
+
+def test_capture_section(tmp_path):
+    file = tmp_path / "vhs-tool.toml"
+    file.write_text(
+        "[capture]\ncapture_rate = 20000000\nmin_free_disk_gib = 100\n", encoding="utf-8"
+    )
+    cfg = load_config(file)
+    assert cfg.capture.capture_rate == 20_000_000
+    assert cfg.capture.min_free_disk_gib == 100.0  # TOML int accepted for a float key
+    assert cfg.capture.video_card == 0  # untouched default
+    assert cfg.capture.linear_rate == 46875
+
+
+def test_capture_bool_for_int_key_rejected(tmp_path):
+    file = tmp_path / "vhs-tool.toml"
+    file.write_text("[capture]\nvideo_card = true\n", encoding="utf-8")
+    with pytest.raises(ToolError, match=r"'video_card' in \[capture\].*must be a int, got bool"):
+        load_config(file)

@@ -12,6 +12,11 @@ src/vhs_tool/
                     (command modules are imported inside build_parser() so config
                     errors hit main()'s ToolError handler)
     common.py       shared helpers: run(), check_deps(), ffprobe wrappers, timestamps, prompts
+    capture_server.py  cxadc_vhs_server HTTP client: ServerConnection (JSON control
+                    calls + curl argv for the data streams — Python is never in the
+                    data path) with UnixSocketConnection as the only transport today
+                    (a TCP/remote one can be added without touching capture logic),
+                    LocalServer spawns/reaps the server subprocess
     config.py       optional vhs-tool.toml at the pipeline root ($VHS_TOOL_CONFIG overrides
                     the location); frozen dataclasses with built-in defaults for paths,
                     binaries, defaults (lang/tv_system/...), hardware, links, upload
@@ -24,6 +29,10 @@ src/vhs_tool/
                     files in the user dir ([paths] templates, default ./templates) override
                     the packaged ones by name
     commands/       one module per subcommand, each exposing add_parser(subparsers)
+        capture.py  record RF via cxadc_vhs_server: pre-flight (cxadc sysfs, clockgen
+                    rate via amixer, disk/RAM) aborts on any deviation; curl→sox/flac/
+                    ffmpeg pipe chains; 'q'/--duration/signals share one clean stop
+                    path (/stop → EOF → encoders → server); sidecar JSON
         decode.py   video RF FLAC → TBC + JSON (vhs-decode wrapper)
         audio.py    HiFi/Linear RF → decoded + aligned FLAC
         export.py   TBC + FLAC → FFV1 + Opus

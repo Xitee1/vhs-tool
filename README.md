@@ -86,6 +86,7 @@ archive.org preview MP4).
 
 ```bash
 vhs-tool --help
+vhs-tool capture --help
 vhs-tool decode --help
 vhs-tool audio --help
 vhs-tool export --help
@@ -96,6 +97,39 @@ vhs-tool rf-compress --help
 vhs-tool rf-resample --help
 vhs-tool rf-trim --help
 ```
+
+### Capture (step 0)
+
+Records the RF streams via [cxadc_vhs_server](https://github.com/namazso/cxadc_vhs_server)
+(replaces `local-capture.sh` from the Scripts fork):
+
+```bash
+# Video + HiFi + Linear with the configured defaults
+# (video FLAC 40 MSPS, HiFi resampled to 10 MSPS FLAC, linear FLAC + headswitch):
+vhs-tool capture ./captures/VHS_PAL_Tape_010
+# → <base>-video.flac, <base>-hifi.flac, <base>-linear.flac,
+#   <base>-headswitch.u8, <base>-capture.json (sidecar)
+
+# Unattended 3-hour tape, date-stamped filenames:
+vhs-tool capture ./captures/VHS_PAL_Tape_011 --add-date --duration 3h
+
+# Raw formats / other cards, as in local-capture.sh:
+vhs-tool capture ./captures/t --no-compress-video --no-resample-hifi --video 2
+```
+
+Before the server starts, a pre-flight compares the cxadc sysfs parameters,
+the clockgen rate (amixer) and free disk/RAM against the `[capture]` config —
+any deviation aborts with a diff (`--ignore-cxadc-checks`,
+`--ignore-clock-checks`, `--ignore-resource-checks`, or `--ignore-checks`
+skip a group). The configured capture rate is the single source for the FLAC
+header rate, the clock check and the HiFi resample ratio, so the files can
+never disagree with how they were captured.
+
+Stop with `q`, `--duration`, or SIGINT/SIGTERM — all take the same clean path
+(`/stop`, streams run out to EOF, encoders finish, then the server exits), so
+the FLAC headers are always finalized. The sidecar JSON records pre-flight
+values, the actual linear rate, buffer-fill history, overflows and tool
+versions. Exit code 2 signals server buffer overflows (lost samples).
 
 ### Decode (step 1)
 

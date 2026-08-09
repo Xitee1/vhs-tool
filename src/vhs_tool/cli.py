@@ -14,6 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     # (command modules read the config at import time for their argparse defaults).
     from .commands import (
         audio,
+        capture,
         decode,
         encode,
         export,
@@ -32,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="<command>")
+    capture.add_parser(subparsers)
     decode.add_parser(subparsers)
     audio.add_parser(subparsers)
     export.add_parser(subparsers)
