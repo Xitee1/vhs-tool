@@ -14,6 +14,7 @@ from vhs_tool.commands.trim import (
     work_paths,
 )
 from vhs_tool.common import ToolError
+from vhs_tool.flac import FlacInfo
 
 
 @pytest.mark.parametrize(
@@ -124,25 +125,31 @@ def test_compute_trim_nothing_to_trim():
 # =============================================================================
 
 SAMPLES = 100_000_000  # with rate 10000 Hz × rf_scale 1000 → 10 s of RF
+RF_INFO = FlacInfo("a" * 32, 65535, 65535, 10_000, 1, 8)
 
 
 @pytest.fixture
 def patched_io(monkeypatch):
-    """Stub out the external sox/soxi dependencies of the trim module."""
+    """Stub out the external tools the trim module drives."""
     monkeypatch.setattr(trim, "check_deps", lambda *cmds: None)
     monkeypatch.setattr(trim, "get_samples", lambda file: SAMPLES)
     monkeypatch.setattr(trim, "soxi", lambda file, flag: 10_000)
+    monkeypatch.setattr(trim, "read_flac_info", lambda file: RF_INFO)
+    monkeypatch.setattr(trim, "set_level_tag", lambda file, level: True)
+    monkeypatch.setattr(trim, "detect_threads", lambda requested=None: 0)
 
 
-def _sox_ok(cmd, **kwargs):
-    """Successful sox stand-in: writes the tmp output file (argv index 4)."""
-    Path(cmd[4]).write_bytes(b"trimmed")
+def _encode_ok(file, out, info, keep_samples, **kwargs):
+    """Successful encode stand-in: writes the tmp output file."""
+    if kwargs.get("dry_run"):
+        return
+    Path(out).write_bytes(b"trimmed")
 
 
-def _sox_fail(cmd, **kwargs):
-    """Failing sox stand-in: leaves a partial tmp behind, then errors out."""
-    Path(cmd[4]).write_bytes(b"partial")
-    raise ToolError("sox exited with code 2")
+def _encode_fail(file, out, info, keep_samples, **kwargs):
+    """Failing encode stand-in: leaves a partial tmp behind, then errors out."""
+    Path(out).write_bytes(b"partial")
+    raise ToolError("flac exited with code 2")
 
 
 def _args(base, **overrides):
@@ -153,6 +160,7 @@ def _args(base, **overrides):
         delete_original=False,
         offset=4.0,
         rf_scale=1000,
+        threads=None,
         dry_run=False,
         verbose=False,
     )
@@ -161,27 +169,27 @@ def _args(base, **overrides):
     return ns
 
 
-def test_trim_file_dry_run_flac_runs_nothing(tmp_path, monkeypatch, patched_io):
+def test_trim_file_dry_run_flac_writes_nothing(tmp_path, monkeypatch, patched_io):
     calls = []
-    monkeypatch.setattr(trim, "run", lambda cmd, **kw: calls.append(cmd))
+    monkeypatch.setattr(trim, "encode_head", lambda *a, **kw: calls.append(kw))
     file = tmp_path / "Tape-video.flac"
     file.write_bytes(b"original")
 
     assert trim_file(file, 0.8, known_samples=SAMPLES, dry_run=True) is True
 
-    assert calls == []  # sox must not be executed in dry-run mode
+    assert [c["dry_run"] for c in calls] == [True]  # nothing encoded for real
     tmp, bak = work_paths(file)
     assert not tmp.exists()
     assert not bak.exists()
     assert file.read_bytes() == b"original"
 
 
-def test_trim_file_failed_sox_unlinks_tmp(tmp_path, monkeypatch, patched_io):
-    monkeypatch.setattr(trim, "run", _sox_fail)
+def test_trim_file_failed_encode_unlinks_tmp(tmp_path, monkeypatch, patched_io):
+    monkeypatch.setattr(trim, "encode_head", _encode_fail)
     file = tmp_path / "Tape-video.flac"
     file.write_bytes(b"original")
 
-    with pytest.raises(ToolError, match="sox exited"):
+    with pytest.raises(ToolError, match="exited with code 2"):
         trim_file(file, 0.8, known_samples=SAMPLES)
 
     tmp, bak = work_paths(file)
@@ -192,7 +200,7 @@ def test_trim_file_failed_sox_unlinks_tmp(tmp_path, monkeypatch, patched_io):
 
 def test_cmd_trim_preflight_refuses_stale_files(tmp_path, monkeypatch, patched_io):
     calls = []
-    monkeypatch.setattr(trim, "run", lambda cmd, **kw: calls.append(cmd))
+    monkeypatch.setattr(trim, "encode_head", lambda *a, **kw: calls.append(a))
     video = tmp_path / "Tape-video.flac"
     hifi = tmp_path / "Tape-hifi.flac"
     video.write_bytes(b"video")
@@ -207,12 +215,12 @@ def test_cmd_trim_preflight_refuses_stale_files(tmp_path, monkeypatch, patched_i
 
 
 def test_cmd_trim_delete_original_deferred_until_all_succeed(tmp_path, monkeypatch, patched_io):
-    def fake_run(cmd, **kwargs):
-        if "hifi" in Path(cmd[1]).name:
-            _sox_fail(cmd)
-        _sox_ok(cmd)
+    def fake_encode(file, out, *args, **kwargs):
+        if "hifi" in Path(file).name:
+            _encode_fail(file, out, *args, **kwargs)
+        _encode_ok(file, out, *args, **kwargs)
 
-    monkeypatch.setattr(trim, "run", fake_run)
+    monkeypatch.setattr(trim, "encode_head", fake_encode)
     video = tmp_path / "Tape-video.flac"
     hifi = tmp_path / "Tape-hifi.flac"
     video.write_bytes(b"video")
@@ -231,7 +239,7 @@ def test_cmd_trim_delete_original_deferred_until_all_succeed(tmp_path, monkeypat
 
 
 def test_cmd_trim_delete_original_after_full_success(tmp_path, monkeypatch, patched_io):
-    monkeypatch.setattr(trim, "run", _sox_ok)
+    monkeypatch.setattr(trim, "encode_head", _encode_ok)
     video = tmp_path / "Tape-video.flac"
     hifi = tmp_path / "Tape-hifi.flac"
     video.write_bytes(b"video")
@@ -247,7 +255,7 @@ def test_cmd_trim_delete_original_after_full_success(tmp_path, monkeypatch, patc
 
 
 def test_cmd_trim_errors_return_one(tmp_path, monkeypatch, patched_io):
-    monkeypatch.setattr(trim, "run", _sox_fail)
+    monkeypatch.setattr(trim, "encode_head", _encode_fail)
     video = tmp_path / "Tape-video.flac"
     video.write_bytes(b"video")
 
@@ -260,7 +268,7 @@ def test_cmd_trim_errors_return_one(tmp_path, monkeypatch, patched_io):
 
 def test_cmd_trim_dry_run_leaves_no_files(tmp_path, monkeypatch, patched_io):
     calls = []
-    monkeypatch.setattr(trim, "run", lambda cmd, **kw: calls.append(cmd))
+    monkeypatch.setattr(trim, "encode_head", lambda *a, **kw: calls.append(kw))
     video = tmp_path / "Tape-video.flac"
     hifi = tmp_path / "Tape-hifi.flac"
     video.write_bytes(b"video")
@@ -269,7 +277,7 @@ def test_cmd_trim_dry_run_leaves_no_files(tmp_path, monkeypatch, patched_io):
     rc = trim.cmd_trim(_args(tmp_path / "Tape", dry_run=True, delete_original=True))
 
     assert rc == 0
-    assert calls == []
+    assert all(c["dry_run"] for c in calls)
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         "Tape-hifi.flac",
         "Tape-video.flac",

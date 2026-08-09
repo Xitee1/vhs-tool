@@ -68,6 +68,10 @@ def _run_pipeline(src: Path, out: Path) -> None:
 
 def test_pipeline_renames_onto_final_name_on_success(tmp_path, monkeypatch):
     monkeypatch.setattr(rf_resample.subprocess, "Popen", _fake_popen(encode_rc=0))
+    tagged = []
+    monkeypatch.setattr(
+        rf_resample, "set_level_tag", lambda file, level: tagged.append((file.name, level))
+    )
     src = tmp_path / "tape-video.flac"
     src.write_bytes(b"src")
     out = tmp_path / "tape-video.8bit.20msps.flac"

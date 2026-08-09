@@ -17,6 +17,10 @@ src/vhs_tool/
                     binaries, defaults (lang/tv_system/...), hardware, links, upload
     encoding.py     single home for all encode settings: X265_PROFILES (publish encodes),
                     FFMPEG_PROFILES + ffmpeg_encode() (YouTube upscale, archive.org preview)
+    flac.py         single home for FLAC capture writing, shared by rf-compress, rf-trim
+                    and rf-resample: source_kind()/encode_settings() (RF → blocksize 65535
+                    + --lax, linear audio → subset at 4096), flac_encode_cmd()/
+                    flac_decode_raw_cmd(), STREAMINFO access and the VHS_TOOL_FLAC_LEVEL tag
     metadata.py     MKV metadata shared by encode + set-props: add_metadata_args()
                     (title/source/publisher/date/comment/lang flags), TAG_FIELDS
                     (arg→Matroska tag), build_global_tags_xml()/parse_global_tags()
@@ -56,7 +60,8 @@ errors — `cli.main()` prints it as `Error: ...` and exits 1.
   output, and exit behavior — don't change them without an explicit reason.
 - **No new hardcoded setup values**: user-specific values (paths, binaries,
   hardware descriptions, static text) belong in `config.py` dataclasses
-  (overridable via `vhs-tool.toml`); encode settings belong in `encoding.py`;
+  (overridable via `vhs-tool.toml`); encode settings belong in `encoding.py`
+  (video/audio deliverables) or `flac.py` (RF captures);
   generated-document layout belongs in `templates/*.j2`.
 - Command modules read the config at import time into module constants /
   argparse defaults (`_CFG = get_config()`), so `--help` shows effective

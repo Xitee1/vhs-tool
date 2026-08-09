@@ -12,9 +12,12 @@ Linear and headswitch files are not resampled (not RF data / too small to matter
 
 Output: <base>-video.8bit.20msps.flac  (etc.) — originals are never modified.
 
-Uses flac -8 --blocksize=65535 --lax for optimal output compression.
+Uses flac -8 --blocksize=65535 --lax for optimal output compression (see
+vhs_tool.flac) and tags the result with the verified level, so a later
+rf-compress run skips it without probing.
 
-Requires: sox (with FLAC support), flac (≥1.4)
+Requires: sox (with FLAC support), flac + metaflac (≥1.5 for multi-threaded
+encoding)
 
 Ref: https://github.com/oyvindln/vhs-decode/wiki/RF-Compression-&-Decompression-Guide
 """
@@ -27,6 +30,7 @@ import sys
 from pathlib import Path
 
 from ..common import ToolError, check_deps, derive_base, log, soxi
+from ..flac import FLAC_LEVEL, RF_BLOCKSIZE, detect_threads, flac_encode_cmd, set_level_tag
 
 # -- Defaults ------------------------------------------------------------------
 VIDEO_RATE = 20000  # target video rate in FLAC-scale (20000 = 20 MSPS)
@@ -34,8 +38,7 @@ VIDEO_CUTOFF = "0-9600"  # sinc lowpass for video
 HIFI_RATE = 10000  # target hifi rate in FLAC-scale (10000 = 10 MSPS)
 HIFI_CUTOFF = "0-3050"  # sinc lowpass for hifi
 SINC_TAPS = 2500  # sinc filter length
-FLAC_LEVEL = 8
-BLOCKSIZE = 65535
+BLOCKSIZE = RF_BLOCKSIZE
 
 # Preset (video rate, video cutoff) pairs
 PRESETS: dict[str, tuple[int, str]] = {
@@ -63,7 +66,7 @@ def default_suffix(bps: int, target_rate: int) -> str:
 
 def _pipeline(
     file: Path, out: Path, src_rate: int, bps: int, target_rate: int,
-    taps: int, cutoff: str, flac_level: int,
+    taps: int, cutoff: str, flac_level: int, threads: int = 0,
 ) -> None:  # fmt: skip
     """Decode → resample → lowpass → encode with optimal FLAC settings.
 
@@ -84,12 +87,11 @@ def _pipeline(
         "-b", str(bps), "-r", str(target_rate), "-c", "1", "-e", "unsigned", "-t", "raw", "-",
         "sinc", "-n", str(taps), cutoff,
     ]  # fmt: skip
-    encode = [
-        "flac", "--silent", f"-{flac_level}", f"--blocksize={BLOCKSIZE}", "--lax",
-        f"--sample-rate={target_rate}", "--channels=1", f"--bps={bps}",
-        "--sign=unsigned", "--endian=little",
-        "-f", "-", "-o", str(part),
-    ]  # fmt: skip
+    # Resampled RF stays RF: the same non-subset settings the captures use.
+    encode = flac_encode_cmd(
+        "-", part, bps=bps, sign="unsigned", rate=target_rate, channels=1,
+        blocksize=BLOCKSIZE, level=flac_level, threads=threads, lax=True,
+    )  # fmt: skip
 
     try:
         decoder = subprocess.Popen(decode, stdout=subprocess.PIPE)
@@ -108,6 +110,9 @@ def _pipeline(
     except BaseException:
         part.unlink(missing_ok=True)
         raise
+    # Freshly written at the target level — record it so rf-compress skips this
+    # file instantly instead of probing a gigabyte to learn the same thing.
+    set_level_tag(part, flac_level)
     part.replace(out)
 
 
@@ -120,6 +125,7 @@ def resample_file(
     taps: int = SINC_TAPS,
     suffix: str = "",
     flac_level: int = FLAC_LEVEL,
+    threads: int | None = None,
     dry_run: bool = False,
     out_dir: Path | None = None,
 ) -> Path | None:
@@ -130,6 +136,8 @@ def resample_file(
 
     The output is written next to the source by default; pass ``out_dir`` to write
     it elsewhere (e.g. straight into an upload folder, avoiding a copy afterwards).
+    ``threads`` defaults to resolving the encoder thread count from the installed
+    flac; pass 0 to force single-threaded encoding.
     """
     check_deps("sox", "soxi", "flac")
 
@@ -168,7 +176,9 @@ def resample_file(
         log("    (dry-run)")
         return None
 
-    _pipeline(file, out, src_rate, bps, target_rate, taps, cutoff, flac_level)
+    if threads is None:
+        threads = detect_threads()
+    _pipeline(file, out, src_rate, bps, target_rate, taps, cutoff, flac_level, threads)
 
     out_size = out.stat().st_size
     src_size = file.stat().st_size
@@ -235,6 +245,12 @@ def add_parser(subparsers) -> None:
         help=f"FLAC compression level (default: {FLAC_LEVEL})",
     )
     parser.add_argument(
+        "-t",
+        "--threads",
+        type=int,
+        help="FLAC encoder threads (default: all cores, needs FLAC ≥ 1.5.0)",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="Print what would be done without executing"
     )
     parser.set_defaults(func=cmd_rf_resample)
@@ -272,13 +288,18 @@ def cmd_rf_resample(args: argparse.Namespace) -> int:
         log(f"  Video:  {video_rate} Hz (sinc {video_cutoff})")
     if with_hifi:
         log(f"  HiFi:   {args.hrate} Hz (sinc {args.hcutoff})")
-    log(f"  Output: flac -{args.flac_level} --blocksize={BLOCKSIZE} --lax")
+    threads = detect_threads(args.threads)
+    log(
+        f"  Output: flac -{args.flac_level} --blocksize={BLOCKSIZE} --lax"
+        + (f" --threads={threads}" if threads else "")
+    )
     log()
 
     options = {
         "taps": args.taps,
         "suffix": args.suffix,
         "flac_level": args.flac_level,
+        "threads": threads,
         "dry_run": args.dry_run,
     }
     if with_video:

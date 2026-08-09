@@ -5,16 +5,19 @@ import pytest
 
 import vhs_tool.commands.rf_compress as rf_compress
 from vhs_tool.commands.rf_compress import (
-    FlacVersion,
+    AnaFrame,
+    ProbeResult,
     compress_file,
     detect_format,
+    find_flac_files,
     find_raw_files,
-    flac_encode_cmd,
     human_bytes,
-    parse_flac_version,
-    resolve_threads,
+    parse_ana_frame,
+    parse_ana_order,
+    recompress_file,
 )
 from vhs_tool.common import ToolError
+from vhs_tool.flac import FlacInfo
 
 
 @pytest.mark.parametrize(
@@ -41,69 +44,6 @@ def test_human_bytes():
     assert human_bytes(3 * 1073741824) == "3.00 GiB"
 
 
-@pytest.mark.parametrize(
-    ("output", "expected"),
-    [
-        ("flac 1.5.0\nCopyright ...", FlacVersion("1.5.0", 1, 5)),
-        ("flac 1.4.3", FlacVersion("1.4.3", 1, 4)),
-        ("flac 2.0", FlacVersion("2.0", 2, 0)),
-        ("", FlacVersion("unknown", 0, 0)),
-        ("command not found", FlacVersion("unknown", 0, 0)),
-    ],
-)
-def test_parse_flac_version(output, expected):
-    assert parse_flac_version(output) == expected
-
-
-def test_supports_threads():
-    # --threads only exists from flac 1.5.0 on
-    assert FlacVersion("1.5.0", 1, 5).supports_threads
-    assert FlacVersion("2.0.0", 2, 0).supports_threads
-    assert not FlacVersion("1.4.3", 1, 4).supports_threads
-    assert not FlacVersion("unknown", 0, 0).supports_threads
-
-
-def test_resolve_threads(monkeypatch):
-    monkeypatch.setattr(rf_compress.os, "cpu_count", lambda: 16)
-    modern, old = FlacVersion("1.5.0", 1, 5), FlacVersion("1.4.3", 1, 4)
-    assert resolve_threads(None, modern) == 16  # auto → all cores
-    assert resolve_threads(4, modern) == 4
-    assert resolve_threads(0, modern) == 0
-    assert resolve_threads(None, old) == 0  # flag does not exist yet
-    assert resolve_threads(8, old) == 0  # requested → dropped (with a warning)
-
-
-def test_resolve_threads_caps_at_flac_limit(monkeypatch):
-    monkeypatch.setattr(rf_compress.os, "cpu_count", lambda: 512)
-    assert resolve_threads(None, FlacVersion("1.5.0", 1, 5)) == rf_compress.MAX_THREADS
-
-
-def test_flac_encode_cmd():
-    cmd = flac_encode_cmd(
-        Path("/c/tape-video.u8"),
-        Path("/c/tape-video.flac.part"),
-        bps=8, sign="unsigned", rate=40000, channels=1,
-        blocksize=65535, level=8, threads=16,
-    )  # fmt: skip
-    assert cmd == [
-        "flac", "--silent", "-8", "--threads=16",
-        "--blocksize=65535", "--lax",
-        "--sample-rate=40000", "--channels=1", "--bps=8",
-        "--sign=unsigned", "--endian=little",
-        "-f", "/c/tape-video.u8", "-o", "/c/tape-video.flac.part",
-    ]  # fmt: skip
-
-
-def test_flac_encode_cmd_without_threads():
-    cmd = flac_encode_cmd(
-        Path("in.s16"), Path("out.flac"),
-        bps=16, sign="signed", rate=40000, channels=1,
-        blocksize=65535, level=8, threads=0,
-    )  # fmt: skip
-    assert not any(c.startswith("--threads") for c in cmd)
-    assert "--bps=16" in cmd and "--sign=signed" in cmd
-
-
 def test_find_raw_files_is_not_recursive(tmp_path):
     for name in ("b-video.u8", "a-video.u8", "c-video.s16", "d.flac", "e.tbc"):
         (tmp_path / name).write_bytes(b"x")
@@ -113,6 +53,68 @@ def test_find_raw_files_is_not_recursive(tmp_path):
     found = [p.name for p in find_raw_files(tmp_path)]
     # grouped by extension in RAW_FORMATS order, sorted within a group
     assert found == ["a-video.u8", "b-video.u8", "c-video.s16"]
+
+
+def test_find_flac_files_skips_partials_and_subdirs(tmp_path):
+    for name in ("b-video.flac", "a-hifi.flac", "c-video.flac.part", "d-video.u8"):
+        (tmp_path / name).write_bytes(b"x")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "deep.flac").write_bytes(b"x")
+
+    assert [p.name for p in find_flac_files(tmp_path)] == ["a-hifi.flac", "b-video.flac"]
+
+
+# =============================================================================
+# Probe helpers
+# =============================================================================
+
+
+def test_parse_ana_frame():
+    line = (
+        "frame=0\toffset=8592\tbits=217256\tblocksize=65535\tsample_rate=40000"
+        "\tchannels=1\tchannel_assignment=INDEPENDENT\n"
+    )
+    assert parse_ana_frame(line) == AnaFrame(8592, 217256, 65535)
+    assert parse_ana_frame("\tsubframe=0\twasted_bits=0\ttype=LPC\torder=12\n") is None
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("\tsubframe=0\twasted_bits=0\ttype=LPC\torder=12\tqlp_coeff_precision=6\n", 12),
+        ("\tsubframe=0\twasted_bits=0\ttype=FIXED\torder=3\n", 3),
+        ("\tsubframe=0\twasted_bits=0\ttype=CONSTANT\tvalue=0\n", None),
+        ("frame=0\toffset=8592\tbits=217256\tblocksize=65535\t\n", None),
+    ],
+)
+def test_parse_ana_order(line, expected):
+    assert parse_ana_order(line) == expected
+
+
+def test_probe_gain_pct():
+    assert ProbeResult(1000, 900, 65535, 1, 12).gain_pct == pytest.approx(10.0)
+    assert ProbeResult(0, 0, 0, 0, 0).gain_pct == 0.0
+
+
+def test_build_plan_partitions_by_tag():
+    raw = [Path("new.u8")]
+    a, b, c = Path("a.flac"), Path("b.flac"), Path("c.flac")
+    tags = {a: 8, b: 5, c: None}
+
+    plan = rf_compress.build_plan(raw, [a, b, c], tags, level=8, force=False)
+
+    assert plan.verified == [a]
+    assert plan.raw_todo == raw
+    assert plan.flac_todo == [(b, 5), (c, None)]
+
+
+def test_build_plan_force_keeps_everything_on_the_worklist():
+    a, b = Path("a.flac"), Path("b.flac")
+
+    plan = rf_compress.build_plan([], [a, b], {a: 8, b: None}, level=8, force=True)
+
+    assert plan.verified == []
+    assert plan.flac_todo == [(a, 8), (b, None)]
 
 
 # =============================================================================
@@ -134,6 +136,7 @@ class _FakeFlac:
         self.decode_rc = decode_rc
         self.payload = b""
         self.commands: list[list[str]] = []
+        self.tagged: list[tuple[str, int]] = []
 
     def run(self, cmd, **kwargs):
         cmd = [str(c) for c in cmd]
@@ -179,6 +182,11 @@ def fake_flac(monkeypatch):
         fake = _FakeFlac(**kwargs)
         monkeypatch.setattr(rf_compress, "run", fake.run)
         monkeypatch.setattr(rf_compress.subprocess, "Popen", fake.popen)
+        monkeypatch.setattr(
+            rf_compress,
+            "set_level_tag",
+            lambda file, level: bool(fake.tagged.append((file.name, level))) or True,
+        )
         return fake
 
     return install
@@ -308,3 +316,215 @@ def test_md5_helpers_agree_on_identical_data(tmp_path, fake_flac):
     raw = _raw(tmp_path, "tape-video.u8", data)
     assert compress_file(raw, keep_raw=True).status == "compressed"
     assert rf_compress.md5_file(raw) == hashlib.md5(data).hexdigest()
+
+
+def test_compress_file_tags_the_new_flac(tmp_path, fake_flac):
+    fake = fake_flac()
+    compress_file(_raw(tmp_path))
+    # tagged while still a .part file, before the atomic rename
+    assert fake.tagged == [("tape-video.flac.part", 8)]
+
+
+# =============================================================================
+# recompress_file
+# =============================================================================
+
+ORIG_DATA = b"original flac bytes, reasonably long"
+
+
+class _FakeRecompress:
+    """Stubs the flac/metaflac machinery that recompress_file drives."""
+
+    def __init__(
+        self, monkeypatch, *, tag=None, gain=5.0, new_data=b"tiny", new_md5="a" * 32,
+        source_md5="a" * 32, source_blocksize=65535, transcode_fails=False, test_fails=False,
+    ):  # fmt: skip
+        self.tagged: list[tuple[str, int]] = []
+        self.probed = 0
+        self.transcoded = 0
+        self.tested = 0
+        self.probe_kwargs: dict = {}
+        self.transcode_kwargs: dict = {}
+        info = FlacInfo(source_md5, source_blocksize, source_blocksize, 40000, 1, 8)
+        new_info = FlacInfo(new_md5, 65535, 65535, 40000, 1, 8)
+
+        def read_flac_info(file):
+            return new_info if file.name.endswith(".part") else info
+
+        def probe_flac(file, **kwargs):
+            self.probed += 1
+            self.probe_kwargs = kwargs
+            return ProbeResult(10000, round(10000 * (1 - gain / 100)), 65535, 1, 12)
+
+        def transcode(file, part, **kwargs):
+            if transcode_fails:
+                raise ToolError("flac transcode failed (decode rc=1, encode rc=0)")
+            self.transcoded += 1
+            self.transcode_kwargs = kwargs
+            part.write_bytes(new_data)
+
+        def set_level_tag(file, level):
+            self.tagged.append((file.name, level))
+            return True
+
+        def fake_run(cmd, **kwargs):
+            assert "-t" in [str(c) for c in cmd]
+            self.tested += 1
+            if test_fails:
+                raise ToolError("flac exited with code 1")
+            return None
+
+        monkeypatch.setattr(rf_compress, "read_flac_info", read_flac_info)
+        monkeypatch.setattr(rf_compress, "read_level_tag", lambda f: tag)
+        monkeypatch.setattr(rf_compress, "probe_flac", probe_flac)
+        monkeypatch.setattr(rf_compress, "transcode", transcode)
+        monkeypatch.setattr(rf_compress, "set_level_tag", set_level_tag)
+        monkeypatch.setattr(rf_compress, "run", fake_run)
+        monkeypatch.setattr(rf_compress, "md5_flac_raw", lambda f, sign: "d" * 32)
+
+
+@pytest.fixture
+def fake_recompress(monkeypatch):
+    def install(**kwargs):
+        return _FakeRecompress(monkeypatch, **kwargs)
+
+    return install
+
+
+def _flac(tmp_path: Path, name: str = "tape-video.flac", data: bytes = ORIG_DATA) -> Path:
+    file = tmp_path / name
+    file.write_bytes(data)
+    return file
+
+
+def test_recompress_skips_a_file_tagged_at_the_target_level(tmp_path, fake_recompress):
+    fake = fake_recompress(tag=8)
+    file = _flac(tmp_path)
+
+    assert recompress_file(file).status == "skipped"
+    assert fake.probed == 0 and fake.transcoded == 0
+    assert file.read_bytes() == ORIG_DATA
+
+
+def test_recompress_probe_below_threshold_tags_and_keeps(tmp_path, fake_recompress):
+    fake = fake_recompress(gain=0.2)
+    file = _flac(tmp_path)
+
+    assert recompress_file(file, min_gain_pct=0.5).status == "skipped"
+    assert fake.probed == 1 and fake.transcoded == 0
+    assert fake.tagged == [("tape-video.flac", 8)]
+    assert file.read_bytes() == ORIG_DATA
+
+
+def test_recompress_full_run_replaces_and_tags(tmp_path, fake_recompress):
+    fake = fake_recompress(gain=5.0, new_data=b"tiny")
+    file = _flac(tmp_path)
+
+    result = recompress_file(file)
+
+    assert result == ("compressed", len(ORIG_DATA), len(b"tiny"))
+    assert file.read_bytes() == b"tiny"
+    assert not file.with_name(file.name + ".part").exists()
+    assert fake.tested == 1
+    # tagged while still a .part file, before the atomic rename
+    assert fake.tagged == [("tape-video.flac.part", 8)]
+
+
+def test_recompress_md5_mismatch_keeps_the_original(tmp_path, fake_recompress):
+    fake_recompress(new_md5="b" * 32)
+    file = _flac(tmp_path)
+
+    assert recompress_file(file).status == "error"
+    assert file.read_bytes() == ORIG_DATA
+    assert not file.with_name(file.name + ".part").exists()
+
+
+def test_recompress_flac_t_failure_keeps_the_original(tmp_path, fake_recompress):
+    fake_recompress(test_fails=True)
+    file = _flac(tmp_path)
+
+    assert recompress_file(file).status == "error"
+    assert file.read_bytes() == ORIG_DATA
+    assert not file.with_name(file.name + ".part").exists()
+
+
+def test_recompress_transcode_failure_keeps_the_original(tmp_path, fake_recompress):
+    fake_recompress(transcode_fails=True)
+    file = _flac(tmp_path)
+
+    assert recompress_file(file).status == "error"
+    assert file.read_bytes() == ORIG_DATA
+    assert not file.with_name(file.name + ".part").exists()
+
+
+def test_recompress_without_improvement_tags_the_original(tmp_path, fake_recompress):
+    fake = fake_recompress(new_data=b"x" * (len(ORIG_DATA) + 10))
+    file = _flac(tmp_path)
+
+    assert recompress_file(file).status == "skipped"
+    assert file.read_bytes() == ORIG_DATA
+    assert not file.with_name(file.name + ".part").exists()
+    assert fake.tagged == [("tape-video.flac", 8)]
+
+
+def test_recompress_force_skips_tag_check_and_probe(tmp_path, fake_recompress):
+    fake = fake_recompress(tag=8)
+    file = _flac(tmp_path)
+
+    assert recompress_file(file, force=True).status == "compressed"
+    assert fake.probed == 0 and fake.transcoded == 1
+
+
+def test_recompress_dry_run_touches_nothing(tmp_path, fake_recompress):
+    fake = fake_recompress(gain=5.0)
+    file = _flac(tmp_path)
+
+    assert recompress_file(file, dry_run=True).status == "compressed"
+    assert fake.probed == 1 and fake.transcoded == 0
+    assert fake.tagged == []
+    assert file.read_bytes() == ORIG_DATA
+
+
+def test_recompress_dry_run_below_threshold_does_not_tag(tmp_path, fake_recompress):
+    fake = fake_recompress(gain=0.1)
+    file = _flac(tmp_path)
+
+    assert recompress_file(file, dry_run=True).status == "skipped"
+    assert fake.tagged == []
+
+
+def test_recompress_source_without_streaminfo_md5_compares_decodes(tmp_path, fake_recompress):
+    fake = fake_recompress(source_md5="0" * 32)
+    file = _flac(tmp_path)
+
+    # header MD5 unusable → falls back to comparing both decoded streams
+    assert recompress_file(file).status == "compressed"
+    assert fake.tested == 1
+
+
+def test_recompress_rf_source_keeps_rf_settings(tmp_path, fake_recompress):
+    fake = fake_recompress(source_blocksize=65535)
+
+    assert recompress_file(_flac(tmp_path)).status == "compressed"
+    for kwargs in (fake.probe_kwargs, fake.transcode_kwargs):
+        assert kwargs["blocksize"] == 65535
+        assert kwargs["lax"] is True
+
+
+def test_recompress_subset_audio_stays_subset(tmp_path, fake_recompress):
+    """A linear capture (blocksize 1152) is re-encoded subset at 4096, without --lax."""
+    fake = fake_recompress(source_blocksize=1152)
+
+    assert recompress_file(_flac(tmp_path, "tape-linear.flac")).status == "compressed"
+    for kwargs in (fake.probe_kwargs, fake.transcode_kwargs):
+        assert kwargs["blocksize"] == rf_compress.AUDIO_BLOCKSIZE
+        assert kwargs["lax"] is False
+
+
+def test_recompress_rf_source_that_lost_its_blocksize_is_repaired(tmp_path, fake_recompress):
+    """An RF file written at an audio blocksize is still recognized by its channel."""
+    fake = fake_recompress(source_blocksize=4096)
+
+    assert recompress_file(_flac(tmp_path, "tape-video.flac")).status == "compressed"
+    assert fake.transcode_kwargs["blocksize"] == 65535
+    assert fake.transcode_kwargs["lax"] is True
