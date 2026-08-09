@@ -49,6 +49,8 @@ class Binaries:
     tbc_tools: str = "./tools/tbc-tools/tbc-tools-x86_64.AppImage"
     tbc_export_config: str = "./tools/tbc-video-export.json"
     teletext: str = "./tools/vhs-decode/.venv/bin/teletext"  # ali1234/vhs-teletext
+    # namazso/cxadc_vhs_server — used by `vhs-tool capture`
+    cxadc_server: str = "./tools/Scripts/clockgen scripts/cxadc_vhs_server"
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,39 @@ class Defaults:
     teletext_language: str = ""
     extra_decode_params: str = "--ire0_adjust"  # Notes.txt "Extra parameters" default
     vhs_decode_version: str = "v0.4.0"  # Notes.txt fallback when not detectable
+
+
+@dataclass(frozen=True)
+class Capture:
+    """`vhs-tool capture` defaults and pre-flight target values.
+
+    `capture_rate` is the single source of truth for the CX card sample rate:
+    it drives the FLAC header rate (1000:1 FLAC-scale), the clockgen pre-flight
+    check, and the HiFi resample ratio. The `cxadc_*` values are what the
+    pre-flight expects in /sys/class/cxadc/cxadc<N>/device/parameters.
+    """
+
+    video_card: int = 0  # CX card number for the video RF stream
+    hifi_card: int = 1  # CX card number for the HiFi RF stream
+    linear_device: str = ""  # ALSA device for linear ("" = server default)
+    linear_rate: int = 46875  # clockgen PCM1802 baseband rate (Hz)
+    capture_rate: int = 40_000_000  # CX card sample rate in Hz (clockgen 40 MSPS)
+    hifi_resample_rate: int = 10_000_000  # HiFi target rate for --resample-hifi (Hz)
+    flac_level: int = 8  # 0-8; 8 is optimal for RF (see rf-compress)
+    flac_threads: int = 0  # FLAC encoder threads; 0 = auto (all cores, needs flac >= 1.5)
+    # Pre-flight: expected cxadc parameters (both cards)
+    cxadc_vmux: int = 0
+    cxadc_level: int = 0  # 0 = min gain (external amp does the amplification)
+    cxadc_sixdb: int = 0
+    cxadc_tenxfsc: int = 0
+    cxadc_tenbit: int = 0
+    # Pre-flight: clockgen ALSA device (clock outputs are checked via amixer)
+    clockgen_device: str = "hw:CARD=CXADCADCClockGe"
+    clockgen_video_out: int = 0  # clockgen output wired to the video card
+    clockgen_hifi_out: int = 1  # clockgen output wired to the hifi card
+    # Pre-flight: resources (the server allocates a 1 GiB ring buffer per card)
+    min_free_disk_gib: float = 400.0  # a 4 h tape needs ~300-400 GiB at level 8
+    ram_headroom_gib: float = 1.0  # required free RAM beyond the ring buffers
 
 
 @dataclass(frozen=True)
@@ -99,6 +134,7 @@ class Config:
     paths: Paths = field(default_factory=Paths)
     binaries: Binaries = field(default_factory=Binaries)
     defaults: Defaults = field(default_factory=Defaults)
+    capture: Capture = field(default_factory=Capture)
     hardware: Hardware = field(default_factory=Hardware)
     links: Links = field(default_factory=Links)
     upload: Upload = field(default_factory=Upload)
@@ -124,6 +160,10 @@ def _build_section(name: str, data: dict, source: Path):
             if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
                 raise ToolError(f"'{key}' in [{name}] of {source} must be a list of strings")
             value = tuple(value)
+        elif expected is float and isinstance(value, int) and not isinstance(value, bool):
+            value = float(value)  # TOML "350" for a float-typed key
+        elif expected is int and isinstance(value, bool):
+            raise ToolError(f"'{key}' in [{name}] of {source} must be a int, got bool")
         elif not isinstance(value, expected):
             raise ToolError(
                 f"'{key}' in [{name}] of {source} must be a {expected.__name__}, "

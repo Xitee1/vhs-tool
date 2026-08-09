@@ -27,6 +27,8 @@
 #tbc_export_config = "./tools/tbc-video-export.json"
 # ali1234/vhs-teletext — used by `vhs-tool process-teletext`
 #teletext = "./tools/vhs-decode/.venv/bin/teletext"
+# namazso/cxadc_vhs_server — used by `vhs-tool capture`
+#cxadc_server = "./tools/Scripts/clockgen scripts/cxadc_vhs_server"
 
 [defaults]
 # Audio language code for muxing
@@ -43,6 +45,37 @@
 #extra_decode_params = "--ire0_adjust"
 # Notes.txt version fallback when not detectable from decode artifacts
 #vhs_decode_version = "v0.4.0"
+
+# `vhs-tool capture` defaults and pre-flight target values
+[capture]
+# CX card numbers (clockgen wiring: clock output N feeds card N)
+#video_card = 0
+#hifi_card = 1
+# ALSA device for linear+headswitch ("" = cxadc_vhs_server default)
+#linear_device = ""
+#linear_rate = 46875
+# The one source of truth for the CX sample rate: drives the FLAC header rate
+# (1000:1), the clockgen pre-flight check, and the HiFi resample ratio
+#capture_rate = 40000000
+#hifi_resample_rate = 10000000
+# FLAC compression level 0-8 (8 is optimal for RF; 9+ would bloat the files)
+#flac_level = 8
+# FLAC encoder threads; 0 = auto (all cores, needs flac >= 1.5)
+#flac_threads = 0
+# Pre-flight: expected /sys/class/cxadc/cxadc<N>/device/parameters values
+#cxadc_vmux = 0
+#cxadc_level = 0
+#cxadc_sixdb = 0
+#cxadc_tenxfsc = 0
+#cxadc_tenbit = 0
+# Pre-flight: clockgen ALSA device for the amixer rate check, and which
+# clockgen output is wired to which card
+#clockgen_device = "hw:CARD=CXADCADCClockGe"
+#clockgen_video_out = 0
+#clockgen_hifi_out = 1
+# Pre-flight: resources (the server allocates a 1 GiB ring buffer per card)
+#min_free_disk_gib = 400.0
+#ram_headroom_gib = 1.0
 
 # Capture hardware description — verbatim text for Notes.txt
 [hardware]
