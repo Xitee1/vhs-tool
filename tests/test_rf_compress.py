@@ -145,6 +145,31 @@ def test_flac_encode_cmd_stdout_variant():
     assert "-o" not in cmd
 
 
+def test_flac_encode_cmd_without_lax():
+    cmd = flac_encode_cmd(
+        "-", None,
+        bps=24, sign="signed", rate=46875, channels=2,
+        blocksize=4096, level=8, threads=0, lax=False,
+    )  # fmt: skip
+    assert "--lax" not in cmd
+    assert "--blocksize=4096" in cmd
+
+
+@pytest.mark.parametrize(
+    ("source_blocksize", "expected"),
+    [
+        (65535, (65535, True)),  # RF capture → RF settings
+        (4609, (65535, True)),  # just above the subset limit → still RF-style
+        (4608, (4096, False)),  # subset limit → normal audio settings
+        (4096, (4096, False)),
+        (1152, (4096, False)),  # linear captures
+    ],
+)
+def test_recompress_settings(source_blocksize, expected):
+    info = FlacInfo("a" * 32, source_blocksize, source_blocksize, 46875, 2, 24)
+    assert rf_compress.recompress_settings(info, 65535) == expected
+
+
 # =============================================================================
 # Recompression helpers
 # =============================================================================
@@ -468,13 +493,15 @@ class _FakeRecompress:
 
     def __init__(
         self, monkeypatch, *, tag=None, gain=5.0, new_data=b"tiny", new_md5="a" * 32,
-        source_md5="a" * 32, transcode_fails=False, test_fails=False,
+        source_md5="a" * 32, source_blocksize=65535, transcode_fails=False, test_fails=False,
     ):  # fmt: skip
         self.tagged: list[tuple[str, int]] = []
         self.probed = 0
         self.transcoded = 0
         self.tested = 0
-        info = FlacInfo(source_md5, 65535, 65535, 40000, 1, 8)
+        self.probe_kwargs: dict = {}
+        self.transcode_kwargs: dict = {}
+        info = FlacInfo(source_md5, source_blocksize, source_blocksize, 40000, 1, 8)
         new_info = FlacInfo(new_md5, 65535, 65535, 40000, 1, 8)
 
         def read_flac_info(file):
@@ -482,12 +509,14 @@ class _FakeRecompress:
 
         def probe_flac(file, **kwargs):
             self.probed += 1
+            self.probe_kwargs = kwargs
             return ProbeResult(10000, round(10000 * (1 - gain / 100)), 65535, 1, 12)
 
         def transcode(file, part, **kwargs):
             if transcode_fails:
                 raise ToolError("flac transcode failed (decode rc=1, encode rc=0)")
             self.transcoded += 1
+            self.transcode_kwargs = kwargs
             part.write_bytes(new_data)
 
         def set_level_tag(file, level):
@@ -627,3 +656,22 @@ def test_recompress_source_without_streaminfo_md5_compares_decodes(tmp_path, fak
     # header MD5 unusable → falls back to comparing both decoded streams
     assert recompress_file(file).status == "compressed"
     assert fake.tested == 1
+
+
+def test_recompress_rf_source_keeps_rf_settings(tmp_path, fake_recompress):
+    fake = fake_recompress(source_blocksize=65535)
+
+    assert recompress_file(_flac(tmp_path)).status == "compressed"
+    for kwargs in (fake.probe_kwargs, fake.transcode_kwargs):
+        assert kwargs["blocksize"] == 65535
+        assert kwargs["lax"] is True
+
+
+def test_recompress_subset_audio_stays_subset(tmp_path, fake_recompress):
+    """A linear capture (blocksize 1152) is re-encoded subset at 4096, without --lax."""
+    fake = fake_recompress(source_blocksize=1152)
+
+    assert recompress_file(_flac(tmp_path)).status == "compressed"
+    for kwargs in (fake.probe_kwargs, fake.transcode_kwargs):
+        assert kwargs["blocksize"] == rf_compress.AUDIO_BLOCKSIZE
+        assert kwargs["lax"] is False

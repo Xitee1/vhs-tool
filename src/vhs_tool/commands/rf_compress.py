@@ -17,6 +17,13 @@ Files that already have a `.flac` sibling are skipped, and the FLAC only takes
 its final name once it is complete and verified — so re-runs are safe.
 
 Existing `.flac` files are recompressed to the target level when that pays off.
+Their format parameters (rate/bps/channels) are read from the file — the
+`--rate`/`--bps`/`--sign`/`--channels` flags only apply to raw inputs. Encode
+settings follow the source's character: RF-style files (non-subset blocksize)
+keep the RF settings (`--blocksize` + --lax), normal subset audio files (e.g.
+linear captures) are re-encoded as subset streams at flac's default blocksize —
+they stay playable everywhere, and on real audio that also compresses better.
+
 FLAC does not record its compression level, so the decision is made by
 measurement: a probe re-encodes the first `--probe-size` MiB of the file and
 projects the size gain; only when it reaches `--min-gain` percent is the file
@@ -71,6 +78,8 @@ CHUNK = 1 << 20  # MD5 read size
 LEVEL_TAG = "VHS_TOOL_FLAC_LEVEL"  # Vorbis comment marking a verified level
 PROBE_MIB = 1024  # probe window read from the start of the compressed file
 MIN_GAIN_PCT = 0.5  # recompress only when the probe projects at least this gain
+SUBSET_MAX_BLOCKSIZE = 4608  # FLAC streaming-subset blocksize limit for rates ≤ 48 kHz
+AUDIO_BLOCKSIZE = 4096  # flac's default blocksize; keeps audio re-encodes subset
 
 # Raw capture extensions in scan order → (bits per sample, sign).
 RAW_FORMATS: dict[str, tuple[int, str]] = {
@@ -201,17 +210,21 @@ def resolve_threads(requested: int | None, version: FlacVersion) -> int:
 
 def flac_encode_cmd(
     file: Path | str, out: Path | None, *, bps: int, sign: str, rate: int, channels: int,
-    blocksize: int, level: int, threads: int,
+    blocksize: int, level: int, threads: int, lax: bool = True,
 ) -> list[str]:  # fmt: skip
-    """flac command line encoding one raw capture with RF-optimal settings.
+    """flac command line encoding one capture with the given settings.
 
-    `file` may be "-" for stdin; `out=None` encodes to stdout.
+    `file` may be "-" for stdin; `out=None` encodes to stdout. `lax` allows
+    non-subset streams (needed for the RF blocksize of 65535) and must be off
+    for subset audio files.
     """
     cmd = ["flac", "--silent", f"-{level}"]
     if threads:
         cmd.append(f"--threads={threads}")
+    cmd.append(f"--blocksize={blocksize}")
+    if lax:
+        cmd.append("--lax")
     cmd += [
-        f"--blocksize={blocksize}", "--lax",
         f"--sample-rate={rate}", f"--channels={channels}", f"--bps={bps}",
         f"--sign={sign}", f"--endian={ENDIAN}",
         "-f",
@@ -234,6 +247,20 @@ def flac_decode_raw_cmd(file: Path) -> list[str]:
         "flac", "--silent", "-d", "--force-raw-format",
         "--sign=signed", f"--endian={ENDIAN}", "--stdout", str(file),
     ]  # fmt: skip
+
+
+def recompress_settings(info: FlacInfo, rf_blocksize: int) -> tuple[int, bool]:
+    """(blocksize, lax) for re-encoding a FLAC, preserving its character.
+
+    RF-style sources (non-subset blocksize, e.g. video/hifi/headswitch RF at
+    65535) keep the RF-optimal settings. Normal subset audio (e.g. linear
+    captures at blocksize 1152) is re-encoded at flac's default blocksize
+    without --lax — it stays a subset stream every player can read, and on
+    real audio that also compresses better than the huge RF blocks.
+    """
+    if info.max_blocksize > SUBSET_MAX_BLOCKSIZE:
+        return rf_blocksize, True
+    return AUDIO_BLOCKSIZE, False
 
 
 def parse_flac_info(output: str) -> FlacInfo:
@@ -421,8 +448,9 @@ class _StreamCounter(threading.Thread):
 
 
 def probe_flac(
-    file: Path, *, info: FlacInfo, level: int, blocksize: int, threads: int, probe_bytes: int
-) -> ProbeResult:
+    file: Path, *, info: FlacInfo, level: int, blocksize: int, lax: bool, threads: int,
+    probe_bytes: int,
+) -> ProbeResult:  # fmt: skip
     """Measure on the file's first `probe_bytes` how much a re-encode at `level` saves.
 
     FLAC does not store its compression level, so the question "is this file
@@ -462,7 +490,7 @@ def probe_flac(
     # -- Pass 2: trial re-encode of exactly those samples -----------------------
     enc_cmd = flac_encode_cmd(
         "-", None, bps=info.bps, sign="signed", rate=info.sample_rate,
-        channels=info.channels, blocksize=blocksize, level=level, threads=threads,
+        channels=info.channels, blocksize=blocksize, level=level, threads=threads, lax=lax,
     )  # fmt: skip
     dec = subprocess.Popen(
         flac_decode_raw_cmd(file), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
@@ -610,7 +638,7 @@ def compress_file(
 
 
 def transcode(
-    file: Path, part: Path, *, info: FlacInfo, level: int, blocksize: int,
+    file: Path, part: Path, *, info: FlacInfo, level: int, blocksize: int, lax: bool,
     threads: int, verbose: bool,
 ) -> None:  # fmt: skip
     """Re-encode `file` into `part` via a decode→encode pipe (no intermediate raw).
@@ -621,7 +649,7 @@ def transcode(
     dec_cmd = flac_decode_raw_cmd(file)
     enc_cmd = flac_encode_cmd(
         "-", part, bps=info.bps, sign="signed", rate=info.sample_rate,
-        channels=info.channels, blocksize=blocksize, level=level, threads=threads,
+        channels=info.channels, blocksize=blocksize, level=level, threads=threads, lax=lax,
     )  # fmt: skip
     if verbose:
         print(f"  $ {shlex.join(dec_cmd)} | {shlex.join(enc_cmd)}", file=sys.stderr)
@@ -659,6 +687,10 @@ def recompress_file(
     (see probe_flac) and only fully re-encoded when the projected gain reaches
     `min_gain_pct` percent. `force` recompresses unconditionally.
 
+    Encode settings follow the source's character (see recompress_settings):
+    RF-style files keep `blocksize` + --lax, subset audio files are re-encoded
+    as subset streams at flac's default blocksize.
+
     Verification chain before the original is replaced: the decode side of the
     transcode checks the source against its own STREAMINFO MD5, the new file
     must carry the identical MD5, and `flac -t` proves that what landed on disk
@@ -682,10 +714,15 @@ def recompress_file(
         log(f"    → already verified for level {flac_level} ({LEVEL_TAG} tag), skipping")
         return CompressResult("skipped")
 
+    # RF-style sources keep the RF settings; subset audio stays subset.
+    blocksize, lax = recompress_settings(info, blocksize)
+    if not lax:
+        log(f"    → subset audio FLAC — re-encoding at blocksize {blocksize} without --lax")
+
     if not force:
         try:
             probe = probe_flac(
-                file, info=info, level=flac_level, blocksize=blocksize,
+                file, info=info, level=flac_level, blocksize=blocksize, lax=lax,
                 threads=threads, probe_bytes=probe_bytes,
             )  # fmt: skip
         except ToolError as exc:
@@ -717,7 +754,7 @@ def recompress_file(
     )
     try:
         transcode(
-            file, part, info=info, level=flac_level, blocksize=blocksize,
+            file, part, info=info, level=flac_level, blocksize=blocksize, lax=lax,
             threads=threads, verbose=verbose,
         )  # fmt: skip
     except ToolError as exc:
@@ -796,23 +833,32 @@ def add_parser(subparsers) -> None:
         "--blocksize",
         type=int,
         default=BLOCKSIZE,
-        help=f"FLAC blocksize (default: {BLOCKSIZE})",
+        help=f"FLAC blocksize for raw/RF input (default: {BLOCKSIZE}; subset audio "
+        f"FLACs are re-encoded at {AUDIO_BLOCKSIZE})",
     )
     parser.add_argument(
         "-r",
         "--rate",
         type=int,
         default=RATE,
-        help=f"Sample rate in Hz, FLAC-scale (default: {RATE} = 40 MSPS)",
+        help="Sample rate in Hz, FLAC-scale, for raw input — FLACs use their own "
+        f"header (default: {RATE} = 40 MSPS)",
     )
-    parser.add_argument("--bps", type=int, help="Bits per sample (default: auto from extension)")
+    parser.add_argument(
+        "--bps",
+        type=int,
+        help="Bits per sample for raw input (default: auto from extension)",
+    )
     parser.add_argument(
         "--sign",
         choices=("unsigned", "signed"),
-        help="Sample sign (default: auto from extension)",
+        help="Sample sign for raw input (default: auto from extension)",
     )
     parser.add_argument(
-        "--channels", type=int, default=CHANNELS, help=f"Number of channels (default: {CHANNELS})"
+        "--channels",
+        type=int,
+        default=CHANNELS,
+        help=f"Number of channels for raw input (default: {CHANNELS})",
     )
     parser.add_argument(
         "-t",
