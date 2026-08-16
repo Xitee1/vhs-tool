@@ -182,41 +182,67 @@ def compute_trim(
 # =============================================================================
 
 
-def get_samples(file: Path) -> int:
+def get_samples(file: Path, info: FlacInfo | None = None) -> int:
     """Robust sample count for a FLAC capture.
 
-    FLAC files written by local-capture.sh sometimes carry total_samples=0 in the
-    STREAMINFO block, making `soxi -s` return 0. Fall back through ffprobe
-    (duration × rate) and finally `sox … stat` (a full scan, slow but always
-    correct) before giving up.
+    The STREAMINFO total_samples field cannot be trusted blindly: FLAC files
+    written by local-capture.sh sometimes carry total_samples=0, making
+    `soxi -s` return 0 — and the field is only 36 bits wide, so a capture
+    longer than 2^36 samples (28:38 of 40 MSPS video RF, 1:54:32 of 10 MSPS
+    hifi) silently wraps around to a far-too-small count. A wrapped count is
+    detected via the file size and discarded.
 
-    Note: ffprobe only helps when the FLAC carries a duration in its metadata —
-    for headerless captures (total_samples=0) it returns nothing, so the full
-    scan is unavoidable. Re-encoding the FLAC with a correct header fixes it.
+    Fallbacks: ffprobe (duration × rate) helps only for a missing count when
+    the FLAC carries a duration elsewhere in its metadata; for a wrapped count
+    it returns the same wrong value (it reads the same STREAMINFO field), so
+    that case goes straight to `sox … stat` — a full scan, slow but always
+    correct. Re-encoding the FLAC with a correct header avoids all of this.
+
+    Pass `info` to reuse an already-read STREAMINFO.
     """
+    if info is None:
+        info = read_flac_info(file)
+    # FLAC never expands its input (RF data still compresses to ~40-70%), so
+    # the decoded stream is at least as large as the file itself — a positive
+    # header count below file-size ÷ bytes-per-sample can only be a wrapped
+    # 36-bit counter, never a real total.
+    min_samples = file.stat().st_size // info.bytes_per_sample
+
+    wrapped = False
     try:
         samples = soxi(file, "-s")
         if samples > 0:
-            return samples
+            if samples >= min_samples:
+                return samples
+            wrapped = True
     except (ToolError, ValueError):
         pass
 
-    if shutil.which("ffprobe") is not None:
-        try:
-            from ..common import video_duration
+    if wrapped:
+        log(
+            f"  {file.name}: FLAC header claims {samples} samples, but the file size "
+            f"proves at least {min_samples} — the capture overflowed the 36-bit "
+            "STREAMINFO sample counter. Ignoring the header (ffprobe reads the same "
+            "field) and counting the real total by reading the whole file (slow: "
+            "minutes for a large RF capture)."
+        )
+    else:
+        if shutil.which("ffprobe") is not None:
+            try:
+                from ..common import video_duration
 
-            rate = soxi(file, "-r")
-            samples = int(video_duration(file) * rate)
-            if samples > 0:
-                return samples
-        except (ToolError, ValueError):
-            pass
+                rate = soxi(file, "-r")
+                samples = int(video_duration(file) * rate)
+                if samples > 0 and samples >= min_samples:
+                    return samples
+            except (ToolError, ValueError):
+                pass
 
-    log(
-        f"  {file.name}: sample count is missing from the FLAC header — counting "
-        "it by reading the whole file (slow: minutes for a large RF capture). "
-        "Re-encoding the FLAC with a correct header avoids this."
-    )
+        log(
+            f"  {file.name}: sample count is missing from the FLAC header — counting "
+            "it by reading the whole file (slow: minutes for a large RF capture). "
+            "Re-encoding the FLAC with a correct header avoids this."
+        )
     result = run(["sox", file, "-n", "stat"], capture=True, check=False)
     for line in result.stderr.splitlines():
         if line.startswith("Samples read"):
@@ -352,7 +378,7 @@ def trim_file(
     info: FlacInfo | None = None
     if ext == ".flac":
         info = read_flac_info(file)
-        total = known_samples if known_samples is not None else get_samples(file)
+        total = known_samples if known_samples is not None else get_samples(file, info)
         rate = info.sample_rate
         unit = "samples"
     elif ext == ".u8":

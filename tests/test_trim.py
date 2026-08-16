@@ -1,4 +1,5 @@
 import argparse
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -132,7 +133,7 @@ RF_INFO = FlacInfo("a" * 32, 65535, 65535, 10_000, 1, 8)
 def patched_io(monkeypatch):
     """Stub out the external tools the trim module drives."""
     monkeypatch.setattr(trim, "check_deps", lambda *cmds: None)
-    monkeypatch.setattr(trim, "get_samples", lambda file: SAMPLES)
+    monkeypatch.setattr(trim, "get_samples", lambda file, info=None: SAMPLES)
     monkeypatch.setattr(trim, "soxi", lambda file, flag: 10_000)
     monkeypatch.setattr(trim, "read_flac_info", lambda file: RF_INFO)
     monkeypatch.setattr(trim, "set_level_tag", lambda file, level: True)
@@ -264,6 +265,46 @@ def test_cmd_trim_errors_return_one(tmp_path, monkeypatch, patched_io):
     assert rc == 1
     assert video.read_bytes() == b"video"
     assert not work_paths(video)[0].exists()
+
+
+# =============================================================================
+# get_samples — wrapped 36-bit STREAMINFO counter
+# =============================================================================
+
+
+def test_get_samples_discards_wrapped_header(tmp_path, monkeypatch, capsys):
+    # 4096-byte file at 1 byte/sample (8-bit mono RF) → at least 4096 real
+    # samples; a header claiming 100 can only be a wrapped 36-bit counter.
+    file = tmp_path / "Tape-video.flac"
+    file.write_bytes(b"x" * 4096)
+    monkeypatch.setattr(trim, "read_flac_info", lambda f: RF_INFO)
+    monkeypatch.setattr(trim, "soxi", lambda f, flag: 100)
+    # Tripwires: ffprobe reads the same wrapped header and must not be consulted.
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        "vhs_tool.common.video_duration",
+        lambda f: pytest.fail("ffprobe consulted for a wrapped header"),
+    )
+    monkeypatch.setattr(
+        trim,
+        "run",
+        lambda cmd, capture, check: subprocess.CompletedProcess(
+            cmd, 0, "", "Samples read:      70000000000\n"
+        ),
+    )
+
+    assert trim.get_samples(file) == 70_000_000_000
+    assert "36-bit" in capsys.readouterr().err  # the warning names the reason
+
+
+def test_get_samples_accepts_plausible_header(tmp_path, monkeypatch):
+    file = tmp_path / "Tape-video.flac"
+    file.write_bytes(b"x" * 4096)
+    monkeypatch.setattr(trim, "read_flac_info", lambda f: RF_INFO)
+    monkeypatch.setattr(trim, "soxi", lambda f, flag: 10_000)  # ≥ 4096 → plausible
+    monkeypatch.setattr(trim, "run", lambda *a, **kw: pytest.fail("fallback used"))
+
+    assert trim.get_samples(file) == 10_000
 
 
 def test_cmd_trim_dry_run_leaves_no_files(tmp_path, monkeypatch, patched_io):
