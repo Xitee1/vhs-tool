@@ -43,6 +43,7 @@ from ..common import (
     ask,
     check_deps,
     confirm,
+    expand_wildcards,
     format_tag,
     human_size,
     run,
@@ -479,7 +480,9 @@ def add_parser(subparsers) -> None:
     )
     parser.add_argument(
         "input_mkv",
-        help="Final encode from `vhs-tool encode` (./final/...)",
+        nargs="+",
+        help="Final encode from `vhs-tool encode` (./final/...); a wildcard works "
+        "as long as it matches exactly one .mkv (sidecars like .llc are ignored)",
     )
     parser.add_argument(
         "platform",
@@ -531,7 +534,22 @@ def add_parser(subparsers) -> None:
 def cmd_upload(args: argparse.Namespace) -> int:
     check_deps("ffmpeg", "ffprobe", "mkvmerge", "mkvextract")
 
-    input_mkv = Path(args.input_mkv)
+    # nargs="+" consumes greedily, so a trailing platform word lands in the
+    # input list when a wildcard was used — reclaim it before classifying.
+    values = expand_wildcards(args.input_mkv)
+    if args.platform is None and len(values) > 1:
+        candidate = values[-1].lower()
+        if candidate in ("ia", "youtube") and not Path(values[-1]).exists():
+            args.platform = values.pop()
+    if len(values) > 1:  # wildcard expansion — keep the MKVs, drop sidecars (.llc, ...)
+        values = [v for v in values if v.lower().endswith(".mkv")]
+        if not values:
+            raise ToolError("None of the matched files is an MKV")
+        if len(values) > 1:
+            raise ToolError(
+                "More than one MKV matched — name one: " + ", ".join(Path(v).name for v in values)
+            )
+    input_mkv = Path(values[0])
     if not input_mkv.is_file():
         raise ToolError(f"Input not found: {input_mkv}")
 

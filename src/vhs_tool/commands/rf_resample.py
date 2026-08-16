@@ -29,7 +29,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ..common import ToolError, check_deps, derive_base, log, soxi
+from ..common import ToolError, check_deps, collapse_base_args, derive_base, log, soxi
 from ..flac import FLAC_LEVEL, RF_BLOCKSIZE, detect_threads, flac_encode_cmd, set_level_tag
 
 # -- Defaults ------------------------------------------------------------------
@@ -201,8 +201,9 @@ def add_parser(subparsers) -> None:
     )
     parser.add_argument(
         "base",
+        nargs="+",
         help='Path-prefix to the tape (e.g. "./captures/VHS_PAL_Tape_010"); '
-        "a full file name of any channel works too",
+        "a full file name of any channel or a wildcard over the capture's files works too",
     )
     parser.add_argument(
         "--preset",
@@ -270,7 +271,7 @@ def cmd_rf_resample(args: argparse.Namespace) -> int:
     with_video = not args.hifi_only
     with_hifi = args.with_hifi or args.hifi_only
 
-    base_path = Path(args.base)
+    base_path = Path(collapse_base_args(args.base))
     input_dir = base_path.parent
     base = derive_base(base_path.name)
     if not base:

@@ -46,7 +46,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ..common import ToolError, check_deps, derive_base, log, run, soxi
+from ..common import ToolError, check_deps, collapse_base_args, derive_base, log, run, soxi
 from ..flac import (
     CHUNK,
     FLAC_LEVEL,
@@ -466,8 +466,9 @@ def add_parser(subparsers) -> None:
     )
     parser.add_argument(
         "base",
+        nargs="+",
         help='Path-prefix to the tape (e.g. "./captures/VHS_PAL_Tape_010"); '
-        "a full file name of any channel works too",
+        "a full file name of any channel or a wildcard over the capture's files works too",
     )
     parser.add_argument(
         "--end",
@@ -526,7 +527,7 @@ def cmd_trim(args: argparse.Namespace) -> int:
     mode, time_value = resolve_mode(args.end, args.trim)
     time_seconds = parse_timestamp(time_value)
 
-    base_path = Path(args.base)
+    base_path = Path(collapse_base_args(args.base))
     input_dir = base_path.parent
     base = derive_base(base_path.name)
     if not base:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import glob
 import os
 import re
 import shlex
@@ -9,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from fractions import Fraction
 from pathlib import Path
@@ -291,6 +293,88 @@ def derive_base(name: str) -> str:
     for channel in RF_CHANNELS:
         name = name.removesuffix(channel)
     return name
+
+
+# Artifacts `decode` and `audio` leave next to each other in the decoded dir —
+# what a wildcard over a decoded base matches (see collapse_base_args).
+DECODED_SUFFIXES = (
+    "-video.tbc.json",
+    "-video_chroma.tbc",
+    "-video.tbc",
+    "-hifi.aligned.flac",
+    "-linear.aligned.flac",
+)
+
+_GLOB_CHARS = frozenset("*?[")
+
+
+def expand_wildcards(values: Sequence[str]) -> list[str]:
+    """Expand wildcard patterns that reached us unexpanded (quoted, or no shell glob).
+
+    Unquoted patterns are normally expanded by the shell before they reach us.
+    A value containing glob characters is expanded here as well — unless it
+    names an existing file literally — so quoted patterns work too. A pattern
+    matching nothing is an error. Plain values pass through untouched;
+    duplicates are dropped, order is preserved.
+    """
+    seen: dict[str, None] = {}
+    for value in values:
+        matches = sorted(glob.glob(value)) if _GLOB_CHARS.intersection(value) else []
+        if matches:
+            seen.update(dict.fromkeys(matches))
+        elif _GLOB_CHARS.intersection(value) and not Path(value).exists():
+            raise ToolError(f"No files match: {value}")
+        else:
+            seen[value] = None
+    return list(seen)
+
+
+def suffix_stripper(*suffixes: str) -> Callable[[str], str]:
+    """A name→base function for collapse_base_args: strips the first matching suffix."""
+
+    def strip(name: str) -> str:
+        for suffix in suffixes:
+            if name.endswith(suffix):
+                return name.removesuffix(suffix)
+        return name
+
+    return strip
+
+
+def collapse_base_args(values: Sequence[str], derive: Callable[[str], str] = derive_base) -> str:
+    """Reduce a positional path list to the single <base> path it names.
+
+    Commands that operate on one capture take a single <base> path-prefix but
+    declare it with nargs="+": a shell wildcard like ``./captures/Tape_010-*``
+    then hands us every file of the capture instead of one argument. Every
+    value whose name ``derive`` can reduce must yield the same base, and the
+    remaining values (sidecars like ``-info.txt`` or ``.bak`` backups) must at
+    least start with it. A single value is returned verbatim, so explicit base
+    arguments behave exactly as before.
+    """
+    if isinstance(values, str):  # a bare string is a Sequence[str] of characters
+        values = [values]
+    values = expand_wildcards(values)
+    if len(values) == 1:
+        return values[0]
+    parents = {str(Path(v).parent) for v in values}
+    if len(parents) > 1:
+        raise ToolError("Path arguments span multiple directories: " + ", ".join(sorted(parents)))
+    bases = {base for v in values if (base := derive(Path(v).name)) and base != Path(v).name}
+    if not bases:
+        names = ", ".join(Path(v).name for v in values[:3])
+        raise ToolError(f"Cannot derive a capture base from: {names}")
+    if len(bases) > 1:
+        raise ToolError(
+            "Path arguments name more than one capture: "
+            + ", ".join(sorted(bases))
+            + " — narrow the wildcard or pass a single base"
+        )
+    base = bases.pop()
+    strays = [name for v in values if not (name := Path(v).name).startswith(base)]
+    if strays:
+        raise ToolError(f"Path arguments do not share the base '{base}': " + ", ".join(strays[:3]))
+    return str(Path(values[0]).parent / base)
 
 
 def soxi(file: Path | str, flag: str) -> int:

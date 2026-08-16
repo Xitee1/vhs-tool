@@ -28,7 +28,14 @@ import os
 import tempfile
 from pathlib import Path
 
-from ..common import ToolError, audio_track_count, check_deps, run, to_matroska_date
+from ..common import (
+    ToolError,
+    audio_track_count,
+    check_deps,
+    expand_wildcards,
+    run,
+    to_matroska_date,
+)
 from ..metadata import TAG_FIELDS, add_metadata_args, build_global_tags_xml, parse_global_tags
 
 
@@ -39,7 +46,12 @@ def add_parser(subparsers) -> None:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("mkv", help="MKV file to edit in place")
+    parser.add_argument(
+        "mkv",
+        nargs="+",
+        help="MKV file to edit in place; a wildcard works as long as it matches "
+        "exactly one .mkv (non-MKV matches like .llc sidecars are ignored)",
+    )
     add_metadata_args(parser, lang_default=None)
     parser.set_defaults(func=cmd_set_props)
 
@@ -55,7 +67,16 @@ def _read_global_tags(mkv: Path) -> dict[str, str]:
 def cmd_set_props(args: argparse.Namespace) -> int:
     check_deps("mkvpropedit")
 
-    mkv = Path(args.mkv)
+    values = expand_wildcards(args.mkv)
+    if len(values) > 1:  # wildcard expansion — keep the MKVs, drop sidecars (.llc, ...)
+        values = [v for v in values if v.lower().endswith(".mkv")]
+        if not values:
+            raise ToolError("None of the matched files is an MKV")
+        if len(values) > 1:
+            raise ToolError(
+                "More than one MKV matched — name one: " + ", ".join(Path(v).name for v in values)
+            )
+    mkv = Path(values[0])
     if not mkv.is_file():
         raise ToolError(f"MKV not found: {mkv}")
 

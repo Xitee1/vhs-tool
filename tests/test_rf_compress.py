@@ -7,6 +7,7 @@ import vhs_tool.commands.rf_compress as rf_compress
 from vhs_tool.commands.rf_compress import (
     AnaFrame,
     ProbeResult,
+    collect_input_files,
     compress_file,
     detect_format,
     find_flac_files,
@@ -528,3 +529,47 @@ def test_recompress_rf_source_that_lost_its_blocksize_is_repaired(tmp_path, fake
     assert recompress_file(_flac(tmp_path, "tape-video.flac")).status == "compressed"
     assert fake.transcode_kwargs["blocksize"] == 65535
     assert fake.transcode_kwargs["lax"] is True
+
+
+# -- collect_input_files -------------------------------------------------------
+
+
+def test_collect_input_files_directory_scan(tmp_path):
+    (tmp_path / "a.u8").write_bytes(b"\x00")
+    (tmp_path / "b.flac").write_bytes(b"\x00")
+    (tmp_path / "notes.txt").write_bytes(b"\x00")
+    result = collect_input_files([str(tmp_path)], forced_format=False)
+    assert result.raw == [tmp_path / "a.u8"]
+    assert result.flac == [tmp_path / "b.flac"]
+    assert result.ignored == []
+    assert result.dirs == 1
+
+
+def test_collect_input_files_wildcard_expansion(tmp_path):
+    for name in ("X-video.flac", "X-hifi.flac", "X-video.u8", "X-info.txt", "X-linear.flac.bak"):
+        (tmp_path / name).write_bytes(b"\x00")
+    values = sorted(str(p) for p in tmp_path.glob("X-*"))
+    result = collect_input_files(values, forced_format=False)
+    assert result.raw == [tmp_path / "X-video.u8"]
+    assert set(result.flac) == {tmp_path / "X-video.flac", tmp_path / "X-hifi.flac"}
+    assert set(result.ignored) == {tmp_path / "X-info.txt", tmp_path / "X-linear.flac.bak"}
+    assert result.dirs == 0
+
+
+def test_collect_input_files_forced_format_accepts_unknown_extensions(tmp_path):
+    (tmp_path / "a.xyz").write_bytes(b"\x00")
+    result = collect_input_files([str(tmp_path / "a.xyz")], forced_format=True)
+    assert result.raw == [tmp_path / "a.xyz"]
+    assert result.ignored == []
+
+
+def test_collect_input_files_dedupes_file_named_twice(tmp_path):
+    (tmp_path / "a.u8").write_bytes(b"\x00")
+    value = str(tmp_path / "a.u8")
+    result = collect_input_files([value, value], forced_format=False)
+    assert result.raw == [tmp_path / "a.u8"]
+
+
+def test_collect_input_files_missing_path_is_an_error(tmp_path):
+    with pytest.raises(ToolError, match="Not a file or directory"):
+        collect_input_files([str(tmp_path / "missing.u8")], forced_format=False)

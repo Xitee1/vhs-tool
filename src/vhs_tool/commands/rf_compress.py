@@ -2,8 +2,10 @@
 
 Port of captures/rf-compress.sh.
 
-Input: a directory, scanned non-recursively for raw capture files, or a single
-raw file. Format parameters are derived from the extension:
+Input: one or more paths — directories (scanned non-recursively for raw capture
+files) and/or raw / FLAC files, so a shell wildcard like "./captures/Tape_010-*"
+works too (files with unknown extensions are ignored). Format parameters are
+derived from the extension:
 
   .u8  / .r8     8-bit unsigned
   .u16          16-bit unsigned
@@ -62,7 +64,7 @@ import threading
 from pathlib import Path
 from typing import NamedTuple
 
-from ..common import ToolError, check_deps, confirm, log, run
+from ..common import ToolError, check_deps, confirm, expand_wildcards, log, run
 from ..flac import (
     AUDIO_BLOCKSIZE,
     CHUNK,
@@ -203,6 +205,46 @@ def find_raw_files(directory: Path) -> list[Path]:
 def find_flac_files(directory: Path) -> list[Path]:
     """FLAC files directly in `directory` (no recursion; `.flac.part` never matches)."""
     return sorted(p for p in directory.glob("*.flac") if p.is_file())
+
+
+class InputFiles(NamedTuple):
+    """The path arguments partitioned into work lists (see collect_input_files)."""
+
+    raw: list[Path]
+    flac: list[Path]
+    ignored: list[Path]  # explicitly named files with an unknown extension
+    dirs: int  # how many of the arguments were scanned directories
+
+
+def collect_input_files(values: list[str], *, forced_format: bool) -> InputFiles:
+    """Partition the path arguments into raw / FLAC capture files.
+
+    Directories are scanned (non-recursively) as before; explicitly named
+    files — typically a shell wildcard expansion — are classified by
+    extension. Unknown extensions (sidecars like `-info.txt`, `.bak` backups)
+    go to `ignored`, unless `forced_format` says --bps/--sign make them
+    compressible as raw. Duplicates are dropped.
+    """
+    raw: list[Path] = []
+    flac: list[Path] = []
+    ignored: list[Path] = []
+    dirs = 0
+    for value in values:
+        path = Path(value)
+        if path.is_dir():
+            dirs += 1
+            raw.extend(find_raw_files(path))
+            flac.extend(find_flac_files(path))
+        elif path.is_file():
+            if path.suffix.lower() == ".flac":
+                flac.append(path)
+            elif detect_format(path.suffix) or forced_format:
+                raw.append(path)
+            else:
+                ignored.append(path)
+        else:
+            raise ToolError(f"Not a file or directory: {path}")
+    return InputFiles(list(dict.fromkeys(raw)), list(dict.fromkeys(flac)), ignored, dirs)
 
 
 # =============================================================================
@@ -639,8 +681,12 @@ def add_parser(subparsers) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "path",
-        help='Directory to scan (e.g. "./captures") or a single raw capture / FLAC file',
+        "paths",
+        nargs="+",
+        metavar="path",
+        help='Directory to scan (e.g. "./captures"), raw capture / FLAC file(s), or a '
+        'wildcard over a capture\'s files (e.g. "./captures/Tape_010-*" — files with '
+        "unknown extensions are ignored)",
     )
     parser.add_argument(
         "-l",
@@ -731,25 +777,25 @@ def add_parser(subparsers) -> None:
 def cmd_rf_compress(args: argparse.Namespace) -> int:
     check_deps("flac", "metaflac")
 
-    path = Path(args.path)
-    if path.is_dir():
-        raw_files = find_raw_files(path)
-        flac_files = find_flac_files(path)
-    elif path.is_file():
-        if path.suffix.lower() == ".flac":
-            raw_files, flac_files = [], [path]
-        else:
-            raw_files, flac_files = [path], []
-    else:
-        raise ToolError(f"Not a file or directory: {path}")
+    paths = expand_wildcards(args.paths)
+    forced_format = args.bps is not None and args.sign is not None
+    raw_files, flac_files, ignored, dirs = collect_input_files(paths, forced_format=forced_format)
+
+    if ignored:
+        names = ", ".join(p.name for p in ignored[:5]) + (", ..." if len(ignored) > 5 else "")
+        log(f"Ignoring {len(ignored)} file(s) with unknown extension: {names}")
+        log("  (raw formats: " + ", ".join(f"*.{ext}" for ext in RAW_FORMATS)
+            + "; --bps + --sign compress other extensions as raw)")  # fmt: skip
 
     if not raw_files and not flac_files:
-        log(f"No capture files found in: {path}")
+        where = f" in: {paths[0]}" if len(paths) == 1 else ""
+        log(f"No capture files found{where}")
         log("  (looked for: " + ", ".join(f"*.{ext}" for ext in RAW_FORMATS) + ", *.flac)")
         return 0
 
-    if path.is_dir():
-        log(f"Found {len(raw_files)} raw and {len(flac_files)} FLAC capture file(s) in: {path}")
+    if dirs or len(paths) > 1:
+        where = f" in: {paths[0]}" if len(paths) == 1 else ""
+        log(f"Found {len(raw_files)} raw and {len(flac_files)} FLAC capture file(s){where}")
 
     # -- Plan overview: nothing is touched before the confirmation --------------
     tags: dict[Path, int | None] = {}

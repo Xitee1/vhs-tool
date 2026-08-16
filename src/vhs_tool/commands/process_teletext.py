@@ -35,7 +35,16 @@ import sys
 import time
 from pathlib import Path
 
-from ..common import ToolError, human_size, log, resolve_binary, run
+from ..common import (
+    DECODED_SUFFIXES,
+    ToolError,
+    collapse_base_args,
+    human_size,
+    log,
+    resolve_binary,
+    run,
+    suffix_stripper,
+)
 from ..config import get_config
 
 _CFG = get_config()
@@ -178,9 +187,10 @@ def add_parser(subparsers) -> None:
     )
     parser.add_argument(
         "base_path",
+        nargs="+",
         help="Decoded files base path (without suffix), e.g. "
         "./decoded/VHS_PAL_Tape__Name-2026-05-03_18_14_58_02_00; "
-        "the -video.tbc file itself works too",
+        "the -video.tbc file itself or a wildcard over the decoded files works too",
     )
     parser.add_argument(
         "-o",
@@ -284,7 +294,9 @@ def run_to_file(cmd: list[str], output: Path, *, dry_run: bool) -> None:
 
 
 def cmd_process_teletext(args: argparse.Namespace) -> int:
-    tbc_file, base = resolve_input(args.base_path)
+    tbc_file, base = resolve_input(
+        collapse_base_args(args.base_path, suffix_stripper(*DECODED_SUFFIXES))
+    )
     if not base:
         raise ToolError("Could not derive base name from input")
 

@@ -98,6 +98,12 @@ vhs-tool rf-resample --help
 vhs-tool rf-trim --help
 ```
 
+Path arguments accept shell wildcards: commands that take a `<base>` path-prefix
+(decode, audio, export, encode, process-teletext, rf-resample, rf-trim) collapse
+an expansion like `./captures/Tape_010-*` back to the one base it names, and
+rf-compress processes every capture file the wildcard matched. A pattern that
+spans more than one capture is an error.
+
 ### Capture (step 0)
 
 Records the RF streams via [cxadc_vhs_server](https://github.com/namazso/cxadc_vhs_server)
@@ -252,6 +258,9 @@ vhs-tool rf-compress ./captures --keep-raw
 
 # A single file; non-clockgen capture rate (28.6 MSPS):
 vhs-tool rf-compress ./captures/VHS_PAL_Tape_010-video.u8 --rate 28636
+
+# All files of one capture via wildcard (unknown extensions are ignored):
+vhs-tool rf-compress ./captures/VHS_PAL_Tape_010-*
 ```
 
 Scans the directory non-recursively for `.u8`/`.r8`/`.u16`/`.s16`/`.r16` and
