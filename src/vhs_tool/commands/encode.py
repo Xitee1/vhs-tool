@@ -25,10 +25,12 @@ from pathlib import Path
 from ..common import (
     ToolError,
     check_deps,
+    collapse_base_args,
     confirm,
     frame_rate,
     run,
     seconds_to_ts,
+    suffix_stripper,
     to_matroska_date,
     ts_to_seconds,
     video_duration,
@@ -238,7 +240,9 @@ def add_parser(subparsers) -> None:
     )
     parser.add_argument(
         "input_base",
-        help="Base path from `vhs-tool export` (expects .ffv1.mkv, .linear.opus, etc.)",
+        nargs="+",
+        help="Base path from `vhs-tool export` (expects .ffv1.mkv, .linear.opus, etc.); "
+        "a full artifact file name or a wildcard over the exported files works too",
     )
     parser.add_argument(
         "-p",
@@ -337,7 +341,9 @@ def cmd_encode(args: argparse.Namespace) -> int:
     parsed_chapters = parse_chapters(chapters)
 
     # Discover input files
-    input_base = args.input_base
+    strip = suffix_stripper(".ffv1.mkv", ".hifi.opus", ".linear.opus", ".teletext")
+    base = Path(collapse_base_args(args.input_base, strip))
+    input_base = str(base.with_name(strip(base.name)))  # a full artifact file name works too
     ffv1_file = Path(f"{input_base}.ffv1.mkv")
     hifi_opus = Path(f"{input_base}.hifi.opus")
     linear_opus = Path(f"{input_base}.linear.opus")

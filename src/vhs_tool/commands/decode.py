@@ -24,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-from ..common import ToolError, derive_base, log, resolve_binary, run
+from ..common import ToolError, collapse_base_args, derive_base, log, resolve_binary, run
 from ..config import get_config
 
 _CFG = get_config()
@@ -114,8 +114,9 @@ def add_parser(subparsers) -> None:
     )
     parser.add_argument(
         "base",
+        nargs="+",
         help='Path-prefix to the tape (e.g. "./captures/VHS_PAL_Tape_010"); '
-        "a full -video.flac file name works too",
+        "a full -video.flac file name or a wildcard over the capture's files works too",
     )
 
     group = parser.add_argument_group("decode settings")
@@ -195,7 +196,7 @@ def add_parser(subparsers) -> None:
 
 
 def cmd_decode(args: argparse.Namespace) -> int:
-    base_path = Path(args.base)
+    base_path = Path(collapse_base_args(args.base))
     input_dir = base_path.parent
     base = derive_base(base_path.name)
     if not base:

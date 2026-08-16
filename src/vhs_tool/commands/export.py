@@ -18,7 +18,16 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from ..common import ToolError, audio_channels, check_deps, human_size, run
+from ..common import (
+    DECODED_SUFFIXES,
+    ToolError,
+    audio_channels,
+    check_deps,
+    collapse_base_args,
+    human_size,
+    run,
+    suffix_stripper,
+)
 from ..config import get_config
 
 _CFG = get_config()
@@ -55,8 +64,11 @@ def add_parser(subparsers) -> None:
     )
     parser.add_argument(
         "base_path",
+        nargs="+",
         help="Decoded files base path (without suffix), e.g. "
-        "./decoded/VHS_PAL_Tape__Name-2026-05-03_18_14_58_02_00",
+        "./decoded/VHS_PAL_Tape__Name-2026-05-03_18_14_58_02_00; "
+        "a full artifact file name (-video.tbc, ...) or a wildcard over the "
+        "decoded files works too",
     )
     parser.add_argument(
         "-o",
@@ -236,7 +248,9 @@ def cmd_export(args: argparse.Namespace) -> int:
     def should_run(part: str) -> bool:
         return not only or part in only
 
-    base_path = args.base_path
+    strip = suffix_stripper(*DECODED_SUFFIXES)
+    base = Path(collapse_base_args(args.base_path, strip))
+    base_path = str(base.with_name(strip(base.name)))  # a full artifact file name works too
     output = args.output or str(Path(_CFG.paths.export) / Path(base_path).name)
 
     tbc_export = Path(args.tbc_export)
