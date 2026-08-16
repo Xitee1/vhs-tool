@@ -17,7 +17,9 @@ from vhs_tool.flac import (
     parse_flac_version,
     parse_level_tag,
     resolve_threads,
+    scan_total_samples,
     source_kind,
+    total_samples_from_tail,
 )
 
 
@@ -249,3 +251,77 @@ def test_flac_metadata_length_rejects_truncated_head():
     head = b"fLaC" + _meta_block(0, 34, last=False)  # no terminating last-block
     with pytest.raises(ToolError):
         flac_metadata_length(head)
+
+
+# =============================================================================
+# Exact sample count (frame-header scan)
+# =============================================================================
+# The fixtures in tests/data/ are real files written by flac 1.5.0 (zeros as
+# input, so they stay tiny), which pins the parser's CRC-8/CRC-16 and field
+# decoding to the reference encoder without needing flac at test time:
+#   rf.flac      300000 samples  mono  8-bit 40000 Hz  blocksize 65535 --lax
+#   linear.flac   10000 samples stereo 24-bit 46875 Hz  blocksize 4096
+#   single.flac    1000 samples  mono  8-bit 40000 Hz  blocksize 4096 (1 frame)
+
+_DATA = Path(__file__).parent / "data"
+
+_SCAN_CASES = [
+    (_DATA / "rf.flac", _info(), 300_000),
+    (_DATA / "linear.flac", _info(blocksize=4096, rate=46875, channels=2, bps=24), 10_000),
+    (_DATA / "single.flac", _info(blocksize=4096), 1_000),
+]
+
+
+def _fixture_tail(path: Path) -> bytes:
+    data = path.read_bytes()
+    return data[flac_metadata_length(data) :]
+
+
+@pytest.mark.parametrize(("path", "info", "expected"), _SCAN_CASES)
+def test_scan_total_samples_matches_encoder(path, info, expected):
+    assert scan_total_samples(path, info) == expected
+
+
+@pytest.mark.parametrize(("path", "info", "expected"), _SCAN_CASES)
+def test_total_from_tail(path, info, expected):
+    assert total_samples_from_tail(_fixture_tail(path), info, tail_at_data_start=True) == expected
+
+
+def test_total_from_tail_truncated_returns_none():
+    # A partially written last frame fails the whole-frame CRC-16 and must
+    # never be counted.
+    tail = _fixture_tail(_DATA / "rf.flac")
+    assert total_samples_from_tail(tail[:-10], _info(), tail_at_data_start=True) is None
+
+
+def test_total_from_tail_trailing_garbage_returns_none():
+    tail = _fixture_tail(_DATA / "rf.flac") + b"junk"
+    assert total_samples_from_tail(tail, _info(), tail_at_data_start=True) is None
+
+
+def test_total_from_tail_corrupt_last_frame_returns_none():
+    tail = bytearray(_fixture_tail(_DATA / "rf.flac"))
+    tail[-5] ^= 0xFF  # flip a bit inside the last frame's payload
+    assert total_samples_from_tail(bytes(tail), _info(), tail_at_data_start=True) is None
+
+
+def test_total_from_tail_rejects_mismatching_streaminfo():
+    # Every frame header is validated against STREAMINFO; a different rate
+    # means these cannot be this stream's frames.
+    tail = _fixture_tail(_DATA / "rf.flac")
+    assert total_samples_from_tail(tail, _info(rate=44100), tail_at_data_start=True) is None
+
+
+def test_total_from_tail_single_frame_needs_data_start():
+    # A lone frame 0 is only trusted when the buffer provably starts at the
+    # first data byte — otherwise a chained predecessor is required.
+    tail = _fixture_tail(_DATA / "single.flac")
+    info = _info(blocksize=4096)
+    assert total_samples_from_tail(tail, info, tail_at_data_start=True) == 1_000
+    assert total_samples_from_tail(tail, info, tail_at_data_start=False) is None
+
+
+def test_scan_total_samples_non_flac_returns_none(tmp_path):
+    bogus = tmp_path / "bogus.flac"
+    bogus.write_bytes(b"definitely not a FLAC stream")
+    assert scan_total_samples(bogus, _info()) is None
