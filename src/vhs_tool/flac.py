@@ -288,3 +288,211 @@ def flac_metadata_length(head: bytes) -> int:
         pos += 4 + int.from_bytes(head[pos + 1 : pos + 4], "big")
         if header & 0x80:  # last-metadata-block flag
             return pos
+
+
+# =============================================================================
+# Exact sample count (frame-header scan)
+# =============================================================================
+# STREAMINFO's total_samples field is only 36 bits wide, and the encoder
+# stores 0 ("unknown") when the real count does not fit — which every video RF
+# capture beyond ~28 min (2^36 samples at 40 MSPS) hits. Counting by decoding
+# (`sox … stat`) then reads the whole file. The frames themselves carry what
+# is needed instead: they are byte-aligned, CRC-protected and numbered, so
+# parsing the last frame header yields the exact total from a little tail I/O.
+
+FRAME_SCAN_WINDOW = 4 << 20  # tail bytes scanned; dozens of worst-case RF frames
+_HEAD_BUFFER = 1 << 20  # metadata must fit in this head read
+
+# Frame-header field tables (FLAC format spec).
+_BLOCKSIZE_CODES = {
+    1: 192, 2: 576, 3: 1152, 4: 2304, 5: 4608, 8: 256, 9: 512, 10: 1024,
+    11: 2048, 12: 4096, 13: 8192, 14: 16384, 15: 32768,
+}  # fmt: skip
+_RATE_CODES = {
+    1: 88200, 2: 176400, 3: 192000, 4: 8000, 5: 16000, 6: 22050, 7: 24000,
+    8: 32000, 9: 44100, 10: 48000, 11: 96000,
+}  # fmt: skip
+_BPS_CODES = {1: 8, 2: 12, 4: 16, 5: 20, 6: 24, 7: 32}
+
+
+def _crc_table(poly: int, width: int) -> list[int]:
+    top, mask = 1 << (width - 1), (1 << width) - 1
+    table = []
+    for byte in range(256):
+        crc = byte << (width - 8)
+        for _ in range(8):
+            crc = ((crc << 1) ^ poly) & mask if crc & top else (crc << 1) & mask
+        table.append(crc)
+    return table
+
+
+_CRC8_TABLE = _crc_table(0x07, 8)  # frame-header CRC
+_CRC16_TABLE = _crc_table(0x8005, 16)  # whole-frame CRC
+
+
+def _crc8(data: bytes) -> int:
+    crc = 0
+    for b in data:
+        crc = _CRC8_TABLE[crc ^ b]
+    return crc
+
+
+def _crc16(data: bytes) -> int:
+    crc = 0
+    for b in data:
+        crc = _CRC16_TABLE[(crc >> 8) ^ b] ^ ((crc << 8) & 0xFFFF)
+    return crc
+
+
+class FrameHeader(NamedTuple):
+    """One parsed and CRC-8-verified frame header inside a scanned buffer."""
+
+    pos: int  # byte offset of the sync code in the buffer
+    number: int  # frame number (fixed blocksize) or first-sample number (variable)
+    variable: bool  # blocking-strategy bit
+    blocksize: int  # this frame's own blocksize in samples
+
+
+def _coded_number(buf: bytes, i: int) -> tuple[int, int] | None:
+    """Decode FLAC's extended-UTF-8 frame/sample number; (value, length) or None."""
+    b0 = buf[i]
+    if b0 < 0x80:
+        return b0, 1
+    length, mask = 0, 0x80
+    while mask and b0 & mask:
+        length += 1
+        mask >>= 1
+    if not 2 <= length <= 7:
+        return None
+    value = b0 & (0xFF >> (length + 1)) if length < 7 else 0
+    for k in range(1, length):
+        b = buf[i + k]
+        if b & 0xC0 != 0x80:
+            return None
+        value = (value << 6) | (b & 0x3F)
+    return value, length
+
+
+def parse_frame_header(buf: bytes, pos: int, info: FlacInfo) -> FrameHeader | None:
+    """Parse a frame header at buf[pos], validating every field against `info`.
+
+    Returns None unless the sync code, all fixed fields (rate, channels, bps,
+    reserved bits), the coded frame/sample number and the header CRC-8 are all
+    consistent — random data survives this with probability ~2^-40.
+    """
+    try:
+        if buf[pos] != 0xFF or (buf[pos + 1] & 0xFE) != 0xF8:
+            return None
+        variable = bool(buf[pos + 1] & 1)
+        bs_code, rate_code = buf[pos + 2] >> 4, buf[pos + 2] & 0xF
+        ch_code, bps_code = buf[pos + 3] >> 4, (buf[pos + 3] >> 1) & 7
+        if buf[pos + 3] & 1 or bs_code == 0 or rate_code == 15 or bps_code == 3:
+            return None
+        if ch_code <= 7:  # plain channel count; 8-10 are the 2-channel joint modes
+            if ch_code + 1 != info.channels:
+                return None
+        elif ch_code <= 10:
+            if info.channels != 2:
+                return None
+        else:
+            return None
+        if bps_code and _BPS_CODES[bps_code] != info.bps:
+            return None
+        num = _coded_number(buf, pos + 4)
+        if num is None:
+            return None
+        number, num_len = num
+        p = pos + 4 + num_len
+        if bs_code == 6:  # 8/16-bit blocksize at end of header, stored as value-1
+            blocksize = buf[p] + 1
+            p += 1
+        elif bs_code == 7:
+            blocksize = (buf[p] << 8 | buf[p + 1]) + 1
+            p += 2
+        else:
+            blocksize = _BLOCKSIZE_CODES[bs_code]
+        if rate_code == 12:  # uncommon rate at end of header (kHz / Hz / daHz)
+            rate = buf[p] * 1000
+            p += 1
+        elif rate_code == 13:
+            rate = buf[p] << 8 | buf[p + 1]
+            p += 2
+        elif rate_code == 14:
+            rate = (buf[p] << 8 | buf[p + 1]) * 10
+            p += 2
+        else:
+            rate = info.sample_rate if rate_code == 0 else _RATE_CODES[rate_code]
+        if rate != info.sample_rate or _crc8(buf[pos:p]) != buf[p]:
+            return None
+    except IndexError:
+        return None
+    return FrameHeader(pos, number, variable, blocksize)
+
+
+def _chains_to(prev: FrameHeader, last: FrameHeader, info: FlacInfo) -> bool:
+    """Whether `prev` is the immediate predecessor frame of `last`."""
+    if prev.variable != last.variable:
+        return False
+    if last.variable:  # numbers are first-sample positions
+        return prev.number + prev.blocksize == last.number
+    # Fixed blocksize: numbers are consecutive and only the stream's last
+    # frame may be shorter than the nominal blocksize.
+    return prev.number + 1 == last.number and prev.blocksize == info.max_blocksize
+
+
+def total_samples_from_tail(tail: bytes, info: FlacInfo, *, tail_at_data_start: bool) -> int | None:
+    """Exact stream total from a buffer holding the end of the frame section.
+
+    The count is taken from the last frame header whose frame passes the
+    whole-frame CRC-16 against the end of the buffer AND whose number is
+    confirmed by a chained predecessor header (or by being frame 0 at the
+    start of the data section, for single-frame streams). Anything less
+    proves nothing — then None is returned and the caller must count the
+    hard way. A truncated or trailing-garbage file fails the CRC-16, so a
+    partially written frame is never counted.
+    """
+    candidates = []
+    i = 0
+    while (j := tail.find(b"\xff", i)) != -1:
+        header = parse_frame_header(tail, j, info)
+        if header is not None:
+            candidates.append(header)
+        i = j + 1
+
+    for idx in range(len(candidates) - 1, -1, -1):
+        last = candidates[idx]
+        if len(tail) - last.pos < 2:
+            continue
+        if _crc16(tail[last.pos : len(tail) - 2]) != int.from_bytes(tail[-2:], "big"):
+            continue  # not a frame ending at EOF (false sync, truncation, junk)
+        confirmed = any(_chains_to(c, last, info) for c in candidates[:idx]) or (
+            tail_at_data_start and last.pos == 0 and last.number == 0
+        )
+        if not confirmed:
+            continue
+        if last.variable:
+            return last.number + last.blocksize
+        return last.number * info.max_blocksize + last.blocksize
+    return None
+
+
+def scan_total_samples(file: Path, info: FlacInfo) -> int | None:
+    """Exact total sample count of a FLAC via its last frame header, or None.
+
+    Reads only the metadata head and the last FRAME_SCAN_WINDOW bytes, so it
+    is fast regardless of file size — unlike decoding the whole stream. None
+    means the tail could not be verified (see total_samples_from_tail); it
+    never guesses.
+    """
+    try:
+        size = file.stat().st_size
+        with open(file, "rb") as fh:
+            metadata_end = flac_metadata_length(fh.read(_HEAD_BUFFER))
+            if metadata_end >= size:
+                return None  # no frames at all
+            start = max(metadata_end, size - FRAME_SCAN_WINDOW)
+            fh.seek(start)
+            tail = fh.read()
+    except (OSError, ToolError):
+        return None
+    return total_samples_from_tail(tail, info, tail_at_data_start=start == metadata_end)

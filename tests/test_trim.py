@@ -279,12 +279,8 @@ def test_get_samples_discards_wrapped_header(tmp_path, monkeypatch, capsys):
     file.write_bytes(b"x" * 4096)
     monkeypatch.setattr(trim, "read_flac_info", lambda f: RF_INFO)
     monkeypatch.setattr(trim, "soxi", lambda f, flag: 100)
-    # Tripwires: ffprobe reads the same wrapped header and must not be consulted.
-    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(
-        "vhs_tool.common.video_duration",
-        lambda f: pytest.fail("ffprobe consulted for a wrapped header"),
-    )
+    # Frame scan cannot verify the tail either → last resort is sox stat.
+    monkeypatch.setattr(trim, "scan_total_samples", lambda f, info: None)
     monkeypatch.setattr(
         trim,
         "run",
@@ -295,6 +291,47 @@ def test_get_samples_discards_wrapped_header(tmp_path, monkeypatch, capsys):
 
     assert trim.get_samples(file) == 70_000_000_000
     assert "36-bit" in capsys.readouterr().err  # the warning names the reason
+
+
+def test_get_samples_wrapped_header_recovered_by_frame_scan(tmp_path, monkeypatch):
+    # The frame scan delivers the exact count — no full-file sox scan needed.
+    file = tmp_path / "Tape-video.flac"
+    file.write_bytes(b"x" * 4096)
+    monkeypatch.setattr(trim, "read_flac_info", lambda f: RF_INFO)
+    monkeypatch.setattr(trim, "soxi", lambda f, flag: 100)  # wrapped
+    monkeypatch.setattr(trim, "scan_total_samples", lambda f, info: 70_000_000_000)
+    monkeypatch.setattr(trim, "run", lambda *a, **kw: pytest.fail("sox stat used"))
+
+    assert trim.get_samples(file) == 70_000_000_000
+
+
+def test_get_samples_missing_header_recovered_by_frame_scan(tmp_path, monkeypatch):
+    file = tmp_path / "Tape-video.flac"
+    file.write_bytes(b"x" * 4096)
+    monkeypatch.setattr(trim, "read_flac_info", lambda f: RF_INFO)
+    monkeypatch.setattr(trim, "soxi", lambda f, flag: 0)  # total_samples=0 capture
+    monkeypatch.setattr(trim, "scan_total_samples", lambda f, info: 70_000_000_000)
+    monkeypatch.setattr(trim, "run", lambda *a, **kw: pytest.fail("sox stat used"))
+
+    assert trim.get_samples(file) == 70_000_000_000
+
+
+def test_get_samples_implausible_scan_result_falls_back(tmp_path, monkeypatch):
+    # A scan result below what the file size proves must not be trusted.
+    file = tmp_path / "Tape-video.flac"
+    file.write_bytes(b"x" * 4096)
+    monkeypatch.setattr(trim, "read_flac_info", lambda f: RF_INFO)
+    monkeypatch.setattr(trim, "soxi", lambda f, flag: 0)
+    monkeypatch.setattr(trim, "scan_total_samples", lambda f, info: 10)
+    monkeypatch.setattr(
+        trim,
+        "run",
+        lambda cmd, capture, check: subprocess.CompletedProcess(
+            cmd, 0, "", "Samples read:      70000000000\n"
+        ),
+    )
+
+    assert trim.get_samples(file) == 70_000_000_000
 
 
 def test_get_samples_accepts_plausible_header(tmp_path, monkeypatch):

@@ -42,7 +42,6 @@ import contextlib
 import hashlib
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -57,6 +56,7 @@ from ..flac import (
     flac_decode_raw_cmd,
     flac_encode_cmd,
     read_flac_info,
+    scan_total_samples,
     set_level_tag,
 )
 
@@ -185,18 +185,15 @@ def compute_trim(
 def get_samples(file: Path, info: FlacInfo | None = None) -> int:
     """Robust sample count for a FLAC capture.
 
-    The STREAMINFO total_samples field cannot be trusted blindly: FLAC files
-    written by local-capture.sh sometimes carry total_samples=0, making
-    `soxi -s` return 0 — and the field is only 36 bits wide, so a capture
-    longer than 2^36 samples (28:38 of 40 MSPS video RF, 1:54:32 of 10 MSPS
-    hifi) silently wraps around to a far-too-small count. A wrapped count is
-    detected via the file size and discarded.
-
-    Fallbacks: ffprobe (duration × rate) helps only for a missing count when
-    the FLAC carries a duration elsewhere in its metadata; for a wrapped count
-    it returns the same wrong value (it reads the same STREAMINFO field), so
-    that case goes straight to `sox … stat` — a full scan, slow but always
-    correct. Re-encoding the FLAC with a correct header avoids all of this.
+    The STREAMINFO total_samples field cannot be trusted blindly: it is only
+    36 bits wide, so the encoder stores 0 ("unknown") for captures beyond
+    2^36 samples (28:38 of 40 MSPS video RF, 1:54:32 of 10 MSPS hifi), piped
+    legacy captures sometimes carry 0 outright, and a foreign encoder may even
+    store a wrapped (truncated) count — detected via the file size and
+    discarded. In all those cases the exact count is recovered from the last
+    FLAC frame header (a little tail I/O instead of reading the whole file);
+    `sox … stat` (full decode, slow but always correct) remains the last
+    resort for files whose tail cannot be verified.
 
     Pass `info` to reuse an already-read STREAMINFO.
     """
@@ -215,34 +212,27 @@ def get_samples(file: Path, info: FlacInfo | None = None) -> int:
             if samples >= min_samples:
                 return samples
             wrapped = True
+            log(
+                f"  {file.name}: FLAC header claims {samples} samples, but the file "
+                f"size proves at least {min_samples} — the header is a wrapped 36-bit "
+                "counter and is ignored."
+            )
     except (ToolError, ValueError):
         pass
 
-    if wrapped:
+    scanned = scan_total_samples(file, info)
+    if scanned is not None and scanned >= min_samples:
         log(
-            f"  {file.name}: FLAC header claims {samples} samples, but the file size "
-            f"proves at least {min_samples} — the capture overflowed the 36-bit "
-            "STREAMINFO sample counter. Ignoring the header (ffprobe reads the same "
-            "field) and counting the real total by reading the whole file (slow: "
-            "minutes for a large RF capture)."
+            f"  {file.name}: sample count is {'wrapped' if wrapped else 'missing'} in "
+            "the FLAC header — recovered exactly from the last frame header."
         )
-    else:
-        if shutil.which("ffprobe") is not None:
-            try:
-                from ..common import video_duration
+        return scanned
 
-                rate = soxi(file, "-r")
-                samples = int(video_duration(file) * rate)
-                if samples > 0 and samples >= min_samples:
-                    return samples
-            except (ToolError, ValueError):
-                pass
-
-        log(
-            f"  {file.name}: sample count is missing from the FLAC header — counting "
-            "it by reading the whole file (slow: minutes for a large RF capture). "
-            "Re-encoding the FLAC with a correct header avoids this."
-        )
+    log(
+        f"  {file.name}: sample count is {'wrapped' if wrapped else 'missing'} in the "
+        "FLAC header and the frame-header scan could not verify the file's tail — "
+        "counting by reading the whole file (slow: minutes for a large RF capture)."
+    )
     result = run(["sox", file, "-n", "stat"], capture=True, check=False)
     for line in result.stderr.splitlines():
         if line.startswith("Samples read"):
@@ -251,8 +241,9 @@ def get_samples(file: Path, info: FlacInfo | None = None) -> int:
                 return samples
 
     raise ToolError(
-        f"Could not determine sample count for {file.name} — tried soxi -s, ffprobe, "
-        "and sox stat (all returned 0/empty). The FLAC may be corrupt or unreadable."
+        f"Could not determine sample count for {file.name} — tried the STREAMINFO "
+        "header, a frame-header scan, and sox stat (all returned 0/empty). The FLAC "
+        "may be corrupt or unreadable."
     )
 
 
